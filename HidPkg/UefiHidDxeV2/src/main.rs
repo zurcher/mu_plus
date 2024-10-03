@@ -23,7 +23,6 @@ mod uefi_entry {
     use rust_advanced_logger_dxe::{debugln, init_debug, DEBUG_ERROR};
     use rust_boot_services_allocator_dxe::GLOBAL_ALLOCATOR;
     use uefi_hid_dxe_v2::{
-        boot_services::UefiBootServices,
         driver_binding::UefiDriverBinding,
         hid::{HidFactory, HidReceiverFactory},
         hid_io::{HidReportReceiver, UefiHidIoFactory},
@@ -33,7 +32,6 @@ mod uefi_entry {
     };
 
     struct UefiReceivers {
-        boot_services: &'static dyn UefiBootServices,
         agent: efi::Handle,
     }
     impl HidReceiverFactory for UefiReceivers {
@@ -42,8 +40,8 @@ mod uefi_entry {
             _controller: efi::Handle,
         ) -> Result<Vec<Box<dyn HidReportReceiver>>, efi::Status> {
             let mut receivers: Vec<Box<dyn HidReportReceiver>> = Vec::new();
-            receivers.push(Box::new(PointerHidHandler::new(self.boot_services, self.agent)));
-            receivers.push(Box::new(KeyboardHidHandler::new(self.boot_services, self.agent)));
+            receivers.push(Box::new(PointerHidHandler::new(self.agent)));
+            receivers.push(Box::new(KeyboardHidHandler::new(self.agent)));
             Ok(receivers)
         }
     }
@@ -56,17 +54,17 @@ mod uefi_entry {
         // Safety: This block is unsafe because it assumes that system_table and (*system_table).boot_services are correct,
         // and because it mutates/accesses the global BOOT_SERVICES static.
         unsafe {
-            BOOT_SERVICES.initialize((*system_table).boot_services);
+            BOOT_SERVICES.initialize((*system_table).boot_services.as_ref().unwrap());
             RUNTIME_SERVICES.store((*system_table).runtime_services, Ordering::SeqCst);
             GLOBAL_ALLOCATOR.init((*system_table).boot_services);
             init_debug((*system_table).boot_services);
         }
 
-        let hid_io_factory = Box::new(UefiHidIoFactory::new(&BOOT_SERVICES, image_handle));
-        let receiver_factory = Box::new(UefiReceivers { boot_services: &BOOT_SERVICES, agent: image_handle });
+        let hid_io_factory = Box::new(UefiHidIoFactory::new(image_handle));
+        let receiver_factory = Box::new(UefiReceivers { agent: image_handle });
         let hid_factory = Box::new(HidFactory::new(hid_io_factory, receiver_factory, image_handle));
 
-        let hid_binding = UefiDriverBinding::new(&BOOT_SERVICES, hid_factory, image_handle);
+        let hid_binding = UefiDriverBinding::new(hid_factory, image_handle);
         hid_binding.install().expect("failed to install HID driver binding");
 
         efi::Status::SUCCESS

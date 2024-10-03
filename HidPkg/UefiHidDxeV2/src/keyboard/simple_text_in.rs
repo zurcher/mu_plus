@@ -14,10 +14,12 @@ use core::{ffi::c_void, ptr};
 use r_efi::{efi, protocols};
 use rust_advanced_logger_dxe::{debugln, DEBUG_ERROR};
 
+use mu_rust_helpers::boot_services::{event::EventType, protocol_handler, tpl::Tpl, BootServices};
+
 use crate::{
-    boot_services::UefiBootServices,
     hid_io::{HidIoFactory, UefiHidIoFactory},
     keyboard::KeyboardHidHandler,
+    BOOT_SERVICES,
 };
 
 /// FFI context
@@ -35,17 +37,12 @@ use crate::{
 #[repr(C)]
 pub struct SimpleTextInFfi {
     simple_text_in: protocols::simple_text_input::Protocol,
-    boot_services: &'static dyn UefiBootServices,
     keyboard_handler: *mut KeyboardHidHandler,
 }
 
 impl SimpleTextInFfi {
     /// Installs the simple text in protocol
-    pub fn install(
-        boot_services: &'static dyn UefiBootServices,
-        controller: efi::Handle,
-        keyboard_handler: &mut KeyboardHidHandler,
-    ) -> Result<(), efi::Status> {
+    pub fn install(controller: efi::Handle, keyboard_handler: &mut KeyboardHidHandler) -> Result<(), efi::Status> {
         //Create simple_text_in context
         let simple_text_in_ctx = SimpleTextInFfi {
             simple_text_in: protocols::simple_text_input::Protocol {
@@ -53,76 +50,75 @@ impl SimpleTextInFfi {
                 read_key_stroke: Self::simple_text_in_read_key_stroke,
                 wait_for_key: ptr::null_mut(),
             },
-            boot_services,
             keyboard_handler: keyboard_handler as *mut KeyboardHidHandler,
         };
 
         let simple_text_in_ptr = Box::into_raw(Box::new(simple_text_in_ctx));
 
         //create event for wait_for_key
-        let mut wait_for_key_event: efi::Event = ptr::null_mut();
-        let status = boot_services.create_event(
-            efi::EVT_NOTIFY_WAIT,
-            efi::TPL_NOTIFY,
-            Some(Self::simple_text_in_wait_for_key),
-            simple_text_in_ptr as *mut c_void,
-            ptr::addr_of_mut!(wait_for_key_event),
-        );
-        if status.is_error() {
+        let status = unsafe {
+            BOOT_SERVICES.create_event_unchecked(
+                EventType::NOTIFY_WAIT,
+                Tpl::NOTIFY,
+                Some(Self::simple_text_in_wait_for_key),
+                simple_text_in_ptr as *mut c_void,
+            )
+        };
+        if status.is_err() {
             drop(unsafe { Box::from_raw(simple_text_in_ptr) });
-            return Err(status);
+            status?;
         }
+        let wait_for_key_event: efi::Event = status.unwrap();
 
         unsafe { (*simple_text_in_ptr).simple_text_in.wait_for_key = wait_for_key_event };
 
         //install the simple_text_in protocol
-        let mut controller = controller;
-        let status = boot_services.install_protocol_interface(
-            ptr::addr_of_mut!(controller),
-            &protocols::simple_text_input::PROTOCOL_GUID as *const efi::Guid as *mut efi::Guid,
-            efi::NATIVE_INTERFACE,
-            simple_text_in_ptr as *mut c_void,
-        );
+        let status = unsafe {
+            BOOT_SERVICES.install_protocol_interface_unchecked(
+                Some(controller),
+                &protocol_handler::SimpleTextInput,
+                simple_text_in_ptr as *mut c_void,
+            )
+        };
 
-        if status.is_error() {
-            let _ = boot_services.close_event(wait_for_key_event);
+        if status.is_err() {
+            let _ = BOOT_SERVICES.close_event(wait_for_key_event);
             drop(unsafe { Box::from_raw(simple_text_in_ptr) });
-            return Err(status);
+            status?;
         }
 
         Ok(())
     }
 
     /// Uninstalls the simple text in protocol
-    pub fn uninstall(
-        boot_services: &'static dyn UefiBootServices,
-        agent: efi::Handle,
-        controller: efi::Handle,
-    ) -> Result<(), efi::Status> {
+    pub fn uninstall(agent: efi::Handle, controller: efi::Handle) -> Result<(), efi::Status> {
         //Controller is set - that means initialize() was called, and there is potential state exposed thru FFI that needs
         //to be cleaned up.
-        let mut simple_text_in_ptr: *mut SimpleTextInFfi = ptr::null_mut();
-        let status = boot_services.open_protocol(
-            controller,
-            &protocols::simple_text_input::PROTOCOL_GUID as *const efi::Guid as *mut efi::Guid,
-            ptr::addr_of_mut!(simple_text_in_ptr) as *mut *mut c_void,
-            agent,
-            controller,
-            efi::OPEN_PROTOCOL_GET_PROTOCOL,
-        );
-        if status.is_error() {
+        let status = unsafe {
+            BOOT_SERVICES.open_protocol_unchecked(
+                controller,
+                &protocol_handler::SimpleTextInput,
+                agent,
+                controller,
+                efi::OPEN_PROTOCOL_GET_PROTOCOL,
+            )
+        };
+        if status.is_err() {
             //No protocol is actually installed on this controller, so nothing to clean up.
             return Ok(());
         }
+        let simple_text_in_ptr: *mut SimpleTextInFfi = status.unwrap() as *mut SimpleTextInFfi;
 
         //Attempt to uninstall the simple_text_in interface - this should disconnect any drivers using it and release
         //the interface.
-        let status = boot_services.uninstall_protocol_interface(
-            controller,
-            &protocols::simple_text_input::PROTOCOL_GUID as *const efi::Guid as *mut efi::Guid,
-            simple_text_in_ptr as *mut c_void,
-        );
-        if status.is_error() {
+        let status = unsafe {
+            BOOT_SERVICES.uninstall_protocol_interface_unchecked(
+                controller,
+                &protocol_handler::SimpleTextInput,
+                simple_text_in_ptr as *mut c_void,
+            )
+        };
+        if status.is_err() {
             //An error here means some other driver might be holding on to the simple_text_in_ptr.
             //Mark the instance invalid by setting the keyboard_handler raw pointer to null, but leak the PointerContext
             //instance. Leaking context allows calls through the pointers on absolute_pointer_ptr to continue to resolve
@@ -133,12 +129,12 @@ impl SimpleTextInFfi {
                 (*simple_text_in_ptr).keyboard_handler = ptr::null_mut();
             }
             //return without tearing down the context.
-            return Err(status);
+            status?;
         }
 
         let wait_for_key_event: efi::Handle = unsafe { (*simple_text_in_ptr).simple_text_in.wait_for_key };
-        let status = boot_services.close_event(wait_for_key_event);
-        if status.is_error() {
+        let status = BOOT_SERVICES.close_event(wait_for_key_event);
+        if status.is_err() {
             //An error here means the event was not closed, so in theory the notification_callback on it could still be
             //fired.
             //Mark the instance invalid by setting the keyboard_handler raw pointer to null, but leak the PointerContext
@@ -148,7 +144,7 @@ impl SimpleTextInFfi {
             unsafe {
                 (*simple_text_in_ptr).keyboard_handler = ptr::null_mut();
             }
-            return Err(status);
+            status?;
         }
         // None of the parts of simple_text_in_ptr are in use, so it is safe to drop it.
         drop(unsafe { Box::from_raw(simple_text_in_ptr) });
@@ -164,15 +160,14 @@ impl SimpleTextInFfi {
             return efi::Status::INVALID_PARAMETER;
         }
         let context = unsafe { (this as *mut SimpleTextInFfi).as_mut() }.expect("bad pointer");
-        let old_tpl = context.boot_services.raise_tpl(efi::TPL_NOTIFY);
+        let old_tpl = BOOT_SERVICES.raise_tpl(Tpl::NOTIFY);
         let mut status = efi::Status::DEVICE_ERROR;
         '_reset_processing: {
             let keyboard_handler = unsafe { context.keyboard_handler.as_mut() };
             if let Some(keyboard_handler) = keyboard_handler {
                 //reset requires an instance of hid_io to allow for LED updating, so use UefiHidIoFactory to build one.
                 if let Some(controller) = keyboard_handler.controller() {
-                    let hid_io = UefiHidIoFactory::new(context.boot_services, keyboard_handler.agent())
-                        .new_hid_io(controller, false);
+                    let hid_io = UefiHidIoFactory::new(keyboard_handler.agent()).new_hid_io(controller, false);
                     if let Ok(hid_io) = hid_io {
                         if let Err(err) = keyboard_handler.reset(hid_io.as_ref(), extended_verification.into()) {
                             status = err;
@@ -183,7 +178,7 @@ impl SimpleTextInFfi {
                 }
             }
         }
-        context.boot_services.restore_tpl(old_tpl);
+        BOOT_SERVICES.restore_tpl(old_tpl);
         status
     }
 
@@ -197,7 +192,7 @@ impl SimpleTextInFfi {
         }
         let context = unsafe { (this as *mut SimpleTextInFfi).as_mut() }.expect("bad pointer");
         let status;
-        let old_tpl = context.boot_services.raise_tpl(efi::TPL_NOTIFY);
+        let old_tpl = BOOT_SERVICES.raise_tpl(Tpl::NOTIFY);
         'read_key_stroke: {
             let keyboard_handler = unsafe { context.keyboard_handler.as_mut() };
             if let Some(keyboard_handler) = keyboard_handler {
@@ -232,7 +227,7 @@ impl SimpleTextInFfi {
                 break 'read_key_stroke;
             }
         }
-        context.boot_services.restore_tpl(old_tpl);
+        BOOT_SERVICES.restore_tpl(old_tpl);
         status
     }
 
@@ -243,7 +238,7 @@ impl SimpleTextInFfi {
             return;
         }
         let context = unsafe { (context as *mut SimpleTextInFfi).as_mut() }.expect("bad pointer");
-        let old_tpl = context.boot_services.raise_tpl(efi::TPL_NOTIFY);
+        let old_tpl = BOOT_SERVICES.raise_tpl(Tpl::NOTIFY);
         {
             if let Some(keyboard_handler) = unsafe { context.keyboard_handler.as_mut() } {
                 while let Some(key_data) = keyboard_handler.peek_key() {
@@ -253,13 +248,13 @@ impl SimpleTextInFfi {
                         continue;
                     } else {
                         // valid keystroke
-                        context.boot_services.signal_event(event);
+                        let _ = BOOT_SERVICES.signal_event(event);
                         break;
                     }
                 }
             }
         }
-        context.boot_services.restore_tpl(old_tpl);
+        BOOT_SERVICES.restore_tpl(old_tpl);
     }
 }
 
@@ -388,7 +383,7 @@ mod test {
         });
 
         // used in reset
-        boot_services.expect_raise_tpl().returning(|_| efi::TPL_APPLICATION);
+        boot_services.expect_raise_tpl().returning(|_| Tpl::APPLICATION);
         boot_services.expect_restore_tpl().returning(|_| ());
 
         extern "efiapi" fn mock_set_report(
@@ -455,7 +450,7 @@ mod test {
         });
 
         // used in reset
-        boot_services.expect_raise_tpl().returning(|_| efi::TPL_APPLICATION);
+        boot_services.expect_raise_tpl().returning(|_| Tpl::APPLICATION);
         boot_services.expect_restore_tpl().returning(|_| ());
 
         // used in keyboard init and uninstall
@@ -596,7 +591,7 @@ mod test {
             efi::Status::SUCCESS
         });
         boot_services.expect_create_event_ex().returning(|_, _, _, _, _, _| efi::Status::SUCCESS);
-        boot_services.expect_raise_tpl().returning(|_| efi::TPL_APPLICATION);
+        boot_services.expect_raise_tpl().returning(|_| Tpl::APPLICATION);
         boot_services.expect_restore_tpl().returning(|_| ());
 
         boot_services.expect_signal_event().returning(|_| {
