@@ -10,11 +10,12 @@
 pub mod protocol {
     use core::ffi::c_void;
 
-    use r_efi::efi::{Guid, Status};
+    use r_efi::efi;
+    use mu_rust_helpers::guid::guid;
+    use uuid::uuid;
 
     /// HidIo interface GUID: 3EA93936-6BF4-49D6-AA50-D9F5B9AD8CFF
-    pub const GUID: Guid =
-        Guid::from_fields(0x3ea93936, 0x6bf4, 0x49d6, 0xaa, 0x50, &[0xd9, 0xf5, 0xb9, 0xad, 0x8c, 0xff]);
+    pub const GUID: efi::Guid = guid!("3EA93936-6BF4-49D6-AA50-D9F5B9AD8CFF");
 
     #[derive(Debug, PartialEq, Eq, Clone, Copy)]
     #[repr(C)]
@@ -45,7 +46,7 @@ pub mod protocol {
         this: *const Protocol,
         report_descriptor_size: *mut usize,
         report_descriptor_buffer: *mut c_void,
-    ) -> Status;
+    ) -> efi::Status;
 
     /// Retrieves a single report from the device.
     ///
@@ -70,7 +71,7 @@ pub mod protocol {
         report_type: HidReportType,
         report_buffer_size: usize,
         report_buffer: *mut c_void,
-    ) -> Status;
+    ) -> efi::Status;
 
     /// Sends a single report to the device.
     ///
@@ -94,7 +95,7 @@ pub mod protocol {
         report_type: HidReportType,
         report_buffer_size: usize,
         report_buffer: *mut c_void,
-    ) -> Status;
+    ) -> efi::Status;
 
     /// Report received callback function.
     ///
@@ -123,7 +124,7 @@ pub mod protocol {
     /// * Other - Unexpected error registering callback or initiating report generation from device.
     ///
     pub type HidIoRegisterReportCallback =
-        extern "efiapi" fn(this: *const Protocol, callback: HidIoReportCallback, context: *mut c_void) -> Status;
+        extern "efiapi" fn(this: *const Protocol, callback: HidIoReportCallback, context: *mut c_void) -> efi::Status;
 
     /// Unregisters a previously registered callback function. The device driver will do any necessary initialization to
     /// configure the device to stop sending reports.
@@ -140,7 +141,7 @@ pub mod protocol {
     /// * Other - Unexpected error unregistering report or disabling report generation from device.
     ///
     pub type HidIoUnregisterReportCallback =
-        extern "efiapi" fn(this: *const Protocol, callback: HidIoReportCallback) -> Status;
+        extern "efiapi" fn(this: *const Protocol, callback: HidIoReportCallback) -> efi::Status;
 
     /// The HID_IO protocol provides a set of services for interacting with a HID device.
     #[repr(C)]
@@ -151,4 +152,31 @@ pub mod protocol {
         pub register_report_callback: HidIoRegisterReportCallback,
         pub unregister_report_callback: HidIoUnregisterReportCallback,
     }
+}
+
+pub mod interface {
+    use core::ops::Deref;
+
+    use crate::protocol;
+
+    use r_efi::efi;
+    use mu_rust_helpers::boot_services::protocol_handler::Protocol;
+    pub struct HidIoProtocol;
+
+    impl Deref for HidIoProtocol {
+        type Target = efi::Guid;
+
+        fn deref(&self) -> &Self::Target {
+            self.protocol_guid()
+        }
+    }
+
+    unsafe impl Protocol for HidIoProtocol {
+        type Interface = protocol::Protocol;
+
+        fn protocol_guid(&self) -> &'static efi::Guid {
+            &protocol::GUID
+        }
+    }
+
 }

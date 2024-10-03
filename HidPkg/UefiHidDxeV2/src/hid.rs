@@ -13,25 +13,24 @@
 //! ```ignore
 //! //Create a receiver factory that creates Pointer and Keyboard Handlers as receivers.
 //! struct UefiReceivers {
-//!    boot_services: &'static dyn UefiBootServices,
 //!    agent: efi::Handle,
 //! }
 //! impl HidReceiverFactory for UefiReceivers {
 //!   fn new_hid_receiver_list(&self, _controller: efi::Handle) -> Result<Vec<Box<dyn HidReportReceiver>>, efi::Status> {
 //!     let mut receivers: Vec<Box<dyn HidReportReceiver>> = Vec::new();
-//!     receivers.push(Box::new(PointerHidHandler::new(self.boot_services, self.agent)));
-//!     receivers.push(Box::new(KeyboardHidHandler::new(self.boot_services, self.agent)));
+//!     receivers.push(Box::new(PointerHidHandler::new(self.agent)));
+//!     receivers.push(Box::new(KeyboardHidHandler::new(self.agent)));
 //!     Ok(receivers)
 //!   }
 //! }
 //!
 //! // Create new factories for HidIo, Receivers, and Hid
-//! let hid_io_factory = Box::new(UefiHidIoFactory::new(&BOOT_SERVICES, image_handle));
-//! let receiver_factory = Box::new(UefiReceivers { boot_services: &BOOT_SERVICES, agent: image_handle });
+//! let hid_io_factory = Box::new(UefiHidIoFactory::new(image_handle));
+//! let receiver_factory = Box::new(UefiReceivers { agent: image_handle });
 //! let hid_factory = Box::new(HidFactory::new(hid_io_factory, receiver_factory, image_handle));
 //!
 //! // start up the driver binding for the hid_factory and install it with the core.
-//! let hid_binding = UefiDriverBinding::new(&BOOT_SERVICES, hid_factory, image_handle);
+//! let hid_binding = UefiDriverBinding::new(hid_factory, image_handle);
 //! hid_binding.install().expect("failed to install HID driver binding");
 //! ```
 //!
@@ -42,18 +41,38 @@
 //! SPDX-License-Identifier: BSD-2-Clause-Patent
 //!
 use alloc::{boxed::Box, vec::Vec};
-use core::ffi::c_void;
+use core::ops::Deref;
 
 #[cfg(test)]
 use mockall::automock;
 use r_efi::efi;
-use rust_advanced_logger_dxe::{debugln, DEBUG_ERROR};
+use uuid::uuid;
+
+use mu_rust_helpers::boot_services::{protocol_handler::Protocol, BootServices};
+use mu_rust_helpers::guid::guid;
 
 use crate::{
-    boot_services::UefiBootServices,
     driver_binding::DriverBinding,
     hid_io::{HidIo, HidIoFactory, HidReportReceiver},
+    BOOT_SERVICES,
 };
+pub struct HidInstanceProtocol;
+
+impl Deref for HidInstanceProtocol {
+    type Target = efi::Guid;
+
+    fn deref(&self) -> &Self::Target {
+        self.protocol_guid()
+    }
+}
+
+unsafe impl Protocol for HidInstanceProtocol {
+    type Interface = HidInstance;
+
+    fn protocol_guid(&self) -> &'static efi::Guid {
+        &HidInstance::PRIVATE_HID_CONTEXT_GUID
+    }
+}
 
 /// This trait defines an abstraction for getting a list of receivers for HID reports.
 ///
@@ -69,15 +88,14 @@ pub trait HidReceiverFactory {
 // Note: a concrete structure is used here because Box<dyn HidIo> is a fat pointer that doesn't work well for FFI.
 // Wrapping it in HidInstance makes it a fixed size type: *mut HidInstance is a thin pointer that can be cast back and
 // forth to c_void.
-struct HidInstance {
+pub struct HidInstance {
     _hid_io: Box<dyn HidIo>,
 }
 
 impl HidInstance {
     // This guid {fb719b29-fda7-4359-ac68-0d46c31a7a7e} is used to associate a HidInstance with a given controller by
     // installing it as a protocol on the controller handle.
-    const PRIVATE_HID_CONTEXT_GUID: efi::Guid =
-        efi::Guid::from_fields(0xfb719b29, 0xfda7, 0x4359, 0xac, 0x68, &[0x0d, 0x46, 0xc3, 0x1a, 0x7a, 0x7e]);
+    const PRIVATE_HID_CONTEXT_GUID: efi::Guid = guid!("fb719b29-fda7-4359-ac68-0d46c31a7a7e");
 
     //create a new hid instance from
     fn new(hid_io: Box<dyn HidIo>) -> Self {
@@ -143,11 +161,7 @@ impl DriverBinding for HidFactory {
     /// using the HidIoFactory provided at construction - if that succeeds, the
     /// controller is considered supported. Note that the actual HidIo instance
     /// constructed for the test is dropped on return.
-    fn driver_binding_supported(
-        &mut self,
-        _boot_services: &'static dyn UefiBootServices,
-        controller: r_efi::efi::Handle,
-    ) -> Result<(), efi::Status> {
+    fn driver_binding_supported(&mut self, controller: r_efi::efi::Handle) -> Result<(), efi::Status> {
         self.hid_io_factory.new_hid_io(controller, true).map(|_| ())
     }
 
@@ -160,11 +174,7 @@ impl DriverBinding for HidFactory {
     /// structure is created and associated with the controller to own these
     /// objects as long as the instance is "running"  - i.e. until
     /// [`Self::driver_binding_stop`] is invoked for the controller.
-    fn driver_binding_start(
-        &mut self,
-        boot_services: &'static dyn UefiBootServices,
-        controller: r_efi::efi::Handle,
-    ) -> Result<(), efi::Status> {
+    fn driver_binding_start(&mut self, controller: r_efi::efi::Handle) -> Result<(), efi::Status> {
         let mut hid_io = self.hid_io_factory.new_hid_io(controller, true)?;
 
         let mut hid_splitter = Box::new(HidSplitter { receivers: Vec::new() });
@@ -181,18 +191,14 @@ impl DriverBinding for HidFactory {
 
         hid_io.set_report_receiver(hid_splitter)?;
 
-        let hid_instance = Box::into_raw(Box::new(HidInstance::new(hid_io)));
+        let hid_instance = Box::leak(Box::new(HidInstance::new(hid_io)));
+        // Hold raw reference in case install fails
+        let hid_instance_raw = hid_instance as *mut HidInstance;
 
-        let mut handle = controller;
-        let status = boot_services.install_protocol_interface(
-            core::ptr::addr_of_mut!(handle),
-            &HidInstance::PRIVATE_HID_CONTEXT_GUID as *const efi::Guid as *mut efi::Guid,
-            efi::NATIVE_INTERFACE,
-            hid_instance as *mut c_void,
-        );
-        if status != efi::Status::SUCCESS {
-            drop(unsafe { Box::from_raw(hid_instance) });
-            return Err(status);
+        let status = BOOT_SERVICES.install_protocol_interface(Some(controller), &HidInstanceProtocol, hid_instance);
+        if status.is_err() {
+            drop(unsafe { Box::from_raw(hid_instance_raw) });
+            status?;
         }
         Ok(())
     }
@@ -201,35 +207,19 @@ impl DriverBinding for HidFactory {
     ///
     /// Stops Hid support for the given controller. The private "HidInstance"
     /// created by [`Self::driver_binding_start`] is reclaimed and dropped.
-    fn driver_binding_stop(
-        &mut self,
-        boot_services: &'static dyn UefiBootServices,
-        controller: r_efi::efi::Handle,
-    ) -> Result<(), efi::Status> {
-        let mut hid_instance: *mut HidInstance = core::ptr::null_mut();
-
-        let status = boot_services.open_protocol(
-            controller,
-            &HidInstance::PRIVATE_HID_CONTEXT_GUID as *const efi::Guid as *mut efi::Guid,
-            core::ptr::addr_of_mut!(hid_instance) as *mut *mut c_void,
-            self.agent,
-            controller,
-            efi::OPEN_PROTOCOL_GET_PROTOCOL,
-        );
-        if status != efi::Status::SUCCESS {
-            return Err(status);
+    fn driver_binding_stop(&mut self, controller: r_efi::efi::Handle) -> Result<(), efi::Status> {
+        unsafe {
+            let hid_instance = BOOT_SERVICES.open_protocol_unchecked(
+                controller,
+                &HidInstanceProtocol,
+                self.agent,
+                controller,
+                efi::OPEN_PROTOCOL_GET_PROTOCOL,
+            )?;
+            // SAFETY: `hid_instance` is expected to be valid if handle_protocol didn't return Err
+            BOOT_SERVICES.uninstall_protocol_interface_unchecked(controller, &HidInstanceProtocol, hid_instance)?;
+            drop(Box::from_raw(hid_instance));
         }
-
-        let status = boot_services.uninstall_protocol_interface(
-            controller,
-            &HidInstance::PRIVATE_HID_CONTEXT_GUID as *const efi::Guid as *mut efi::Guid,
-            hid_instance as *mut c_void,
-        );
-        if status != efi::Status::SUCCESS {
-            debugln!(DEBUG_ERROR, "hid::driver_binding_stop: unexpected failure return: {:x?}", status);
-        }
-
-        drop(unsafe { Box::from_raw(hid_instance) });
         Ok(())
     }
 }
@@ -333,7 +323,7 @@ mod test {
 
         let mut hid_factory = HidFactory::new(hid_io_factory, receiver_factory, agent);
         let controller = 0x02 as efi::Handle;
-        assert_eq!(hid_factory.driver_binding_start(boot_services, controller), Err(efi::Status::UNSUPPORTED));
+        assert_eq!(hid_factory.driver_binding_start(controller), Err(efi::Status::UNSUPPORTED));
     }
 
     #[test]
@@ -359,7 +349,7 @@ mod test {
 
         let mut hid_factory = HidFactory::new(hid_io_factory, receiver_factory, agent);
         let controller = 0x02 as efi::Handle;
-        hid_factory.driver_binding_start(boot_services, controller).unwrap();
+        hid_factory.driver_binding_start(controller).unwrap();
 
         //test note: this will leak a HidInstance.
     }

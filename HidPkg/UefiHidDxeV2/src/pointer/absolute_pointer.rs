@@ -16,7 +16,8 @@ use hidparser::report_data_types::Usage;
 use rust_advanced_logger_dxe::{debugln, DEBUG_ERROR, DEBUG_INFO, DEBUG_WARN};
 
 use super::{PointerHidHandler, BUTTON_MAX, BUTTON_MIN, DIGITIZER_SWITCH_MAX, DIGITIZER_SWITCH_MIN};
-use crate::boot_services::UefiBootServices;
+use crate::BOOT_SERVICES;
+use mu_rust_helpers::boot_services::{event::EventType, protocol_handler, tpl::Tpl, BootServices};
 
 // FFI context
 // Safety: a pointer to PointerHidHandler is included in the context so that it can be reclaimed in the absolute_pointer
@@ -32,7 +33,6 @@ use crate::boot_services::UefiBootServices;
 #[repr(C)]
 pub struct PointerContext {
     absolute_pointer: protocols::absolute_pointer::Protocol,
-    boot_services: &'static dyn UefiBootServices,
     pointer_handler: *mut PointerHidHandler,
 }
 
@@ -46,11 +46,7 @@ impl Drop for PointerContext {
 
 impl PointerContext {
     /// Installs the absolute pointer protocol
-    pub fn install(
-        boot_services: &'static dyn UefiBootServices,
-        controller: efi::Handle,
-        pointer_handler: &mut PointerHidHandler,
-    ) -> Result<(), efi::Status> {
+    pub fn install(controller: efi::Handle, pointer_handler: &mut PointerHidHandler) -> Result<(), efi::Status> {
         // Create pointer context.
         let pointer_ctx = PointerContext {
             absolute_pointer: protocols::absolute_pointer::Protocol {
@@ -59,41 +55,41 @@ impl PointerContext {
                 mode: Box::into_raw(Box::new(Self::initialize_mode(pointer_handler))),
                 wait_for_input: ptr::null_mut(),
             },
-            boot_services,
             pointer_handler: pointer_handler as *mut PointerHidHandler,
         };
 
         let absolute_pointer_ptr = Box::into_raw(Box::new(pointer_ctx));
 
         // create event for wait_for_input.
-        let mut wait_for_pointer_input_event: efi::Event = ptr::null_mut();
-        let status = boot_services.create_event(
-            efi::EVT_NOTIFY_WAIT,
-            efi::TPL_NOTIFY,
-            Some(Self::wait_for_pointer),
-            absolute_pointer_ptr as *mut c_void,
-            ptr::addr_of_mut!(wait_for_pointer_input_event),
-        );
-        if status.is_error() {
+        let status = unsafe {
+            BOOT_SERVICES.create_event_unchecked(
+                EventType::NOTIFY_WAIT,
+                Tpl::NOTIFY,
+                Some(Self::wait_for_pointer),
+                absolute_pointer_ptr as *mut c_void,
+            )
+        };
+        if status.is_err() {
             drop(unsafe { Box::from_raw(absolute_pointer_ptr) });
-            return Err(status);
+            status?;
         }
+        let wait_for_pointer_input_event: efi::Event = status.unwrap();
 
         unsafe { (*absolute_pointer_ptr).absolute_pointer.wait_for_input = wait_for_pointer_input_event };
 
         // install the absolute_pointer protocol.
-        let mut controller = controller;
-        let status = boot_services.install_protocol_interface(
-            ptr::addr_of_mut!(controller),
-            &protocols::absolute_pointer::PROTOCOL_GUID as *const efi::Guid as *mut efi::Guid,
-            efi::NATIVE_INTERFACE,
-            absolute_pointer_ptr as *mut c_void,
-        );
+        let status = unsafe {
+            BOOT_SERVICES.install_protocol_interface_unchecked(
+                Some(controller),
+                &protocol_handler::AbsolutePointer,
+                absolute_pointer_ptr as *mut c_void,
+            )
+        };
 
-        if status.is_error() {
-            let _ = boot_services.close_event(wait_for_pointer_input_event);
+        if status.is_err() {
+            let _ = BOOT_SERVICES.close_event(wait_for_pointer_input_event);
             drop(unsafe { Box::from_raw(absolute_pointer_ptr) });
-            return Err(status);
+            status?;
         }
 
         Ok(())
@@ -143,33 +139,30 @@ impl PointerContext {
     }
 
     /// Uninstalls the absolute pointer protocol
-    pub fn uninstall(
-        boot_services: &'static dyn UefiBootServices,
-        agent: efi::Handle,
-        controller: efi::Handle,
-    ) -> Result<(), efi::Status> {
-        let mut absolute_pointer_ptr: *mut PointerContext = ptr::null_mut();
-        let status = boot_services.open_protocol(
-            controller,
-            &protocols::absolute_pointer::PROTOCOL_GUID as *const efi::Guid as *mut efi::Guid,
-            ptr::addr_of_mut!(absolute_pointer_ptr) as *mut *mut c_void,
-            agent,
-            controller,
-            efi::OPEN_PROTOCOL_GET_PROTOCOL,
-        );
-        if status.is_error() {
+    pub fn uninstall(agent: efi::Handle, controller: efi::Handle) -> Result<(), efi::Status> {
+        let status = unsafe {
+            BOOT_SERVICES.open_protocol_unchecked(
+                controller,
+                &protocol_handler::AbsolutePointer,
+                agent,
+                controller,
+                efi::OPEN_PROTOCOL_GET_PROTOCOL,
+            )
+        };
+        if status.is_err() {
             //No protocol is actually installed on this controller, so nothing to clean up.
             return Ok(());
         }
+        let absolute_pointer_ptr: *mut PointerContext = status.unwrap() as *mut PointerContext;
 
         //Attempt to uninstall the absolute_pointer interface - this should disconnect any drivers using it and release
         //the interface.
-        let status = boot_services.uninstall_protocol_interface(
+        let status = unsafe {BOOT_SERVICES.uninstall_protocol_interface_unchecked(
             controller,
-            &protocols::absolute_pointer::PROTOCOL_GUID as *const efi::Guid as *mut efi::Guid,
+            &protocol_handler::AbsolutePointer,
             absolute_pointer_ptr as *mut c_void,
-        );
-        if status.is_error() {
+        )};
+        if status.is_err() {
             //An error here means some other driver might be holding on to the absolute_pointer_ptr.
             //Mark the instance invalid by setting the pointer_handler raw pointer to null, but leak the PointerContext
             //instance. Leaking context allows calls through the pointers on absolute_pointer_ptr to continue to resolve
@@ -180,12 +173,12 @@ impl PointerContext {
                 (*absolute_pointer_ptr).pointer_handler = ptr::null_mut();
             }
             //return without tearing down the context.
-            return Err(status);
+            status?;
         }
 
         let wait_for_input_event: efi::Handle = unsafe { (*absolute_pointer_ptr).absolute_pointer.wait_for_input };
-        let status = boot_services.close_event(wait_for_input_event);
-        if status.is_error() {
+        let status = BOOT_SERVICES.close_event(wait_for_input_event);
+        if status.is_err() {
             //An error here means the event was not uninstalled, so in theory the notification_callback on it could still be
             //fired.
             //Mark the instance invalid by setting the pointer_handler raw pointer to null, but leak the PointerContext
@@ -195,7 +188,7 @@ impl PointerContext {
             unsafe {
                 (*absolute_pointer_ptr).pointer_handler = ptr::null_mut();
             }
-            return Err(status);
+            status?;
         }
 
         // None of the parts of absolute pointer are in use, so it is safe to reclaim it.
@@ -207,19 +200,19 @@ impl PointerContext {
     extern "efiapi" fn wait_for_pointer(event: efi::Event, context: *mut c_void) {
         let pointer_ctx = unsafe { (context as *mut PointerContext).as_mut().expect("bad context") };
         // raise to notify to protect access to pointer_handler, and check if event should be signalled.
-        let old_tpl = pointer_ctx.boot_services.raise_tpl(efi::TPL_NOTIFY);
+        let old_tpl = BOOT_SERVICES.raise_tpl(Tpl::NOTIFY);
         {
             let pointer_handler = unsafe { pointer_ctx.pointer_handler.as_mut() };
             if let Some(pointer_handler) = pointer_handler {
                 if pointer_handler.state_changed {
-                    pointer_ctx.boot_services.signal_event(event);
+                    let _ = BOOT_SERVICES.signal_event(event);
                 }
             } else {
                 // implies that this API was invoked after pointer handler was dropped.
                 debugln!(DEBUG_ERROR, "absolute_pointer_reset invoked after pointer dropped.");
             }
         }
-        pointer_ctx.boot_services.restore_tpl(old_tpl);
+        BOOT_SERVICES.restore_tpl(old_tpl);
     }
 
     // resets the pointer state - part of the absolute pointer interface.
@@ -234,7 +227,7 @@ impl PointerContext {
         let mut status = efi::Status::SUCCESS;
         {
             // raise to notify to protect access to pointer_handler and reset pointer handler state
-            let old_tpl = pointer_ctx.boot_services.raise_tpl(efi::TPL_NOTIFY);
+            let old_tpl = BOOT_SERVICES.raise_tpl(Tpl::NOTIFY);
 
             let pointer_handler = unsafe { pointer_ctx.pointer_handler.as_mut() };
             if let Some(pointer_handler) = pointer_handler {
@@ -245,7 +238,7 @@ impl PointerContext {
                 status = efi::Status::DEVICE_ERROR;
             }
 
-            pointer_ctx.boot_services.restore_tpl(old_tpl);
+            BOOT_SERVICES.restore_tpl(old_tpl);
         }
         status
     }
@@ -264,7 +257,7 @@ impl PointerContext {
         let mut status = efi::Status::SUCCESS;
         {
             // raise to notify to protect access to pointer_handler, and retrieve pointer handler state.
-            let old_tpl = pointer_ctx.boot_services.raise_tpl(efi::TPL_NOTIFY);
+            let old_tpl = BOOT_SERVICES.raise_tpl(Tpl::NOTIFY);
 
             let pointer_handler = unsafe { pointer_ctx.pointer_handler.as_mut() };
             if let Some(pointer_handler) = pointer_handler {
@@ -282,7 +275,7 @@ impl PointerContext {
                 status = efi::Status::DEVICE_ERROR;
             }
 
-            pointer_ctx.boot_services.restore_tpl(old_tpl);
+            BOOT_SERVICES.restore_tpl(old_tpl);
         }
         status
     }
@@ -375,12 +368,12 @@ mod test {
 
         // expected on PointerHidHandler::receive_report
         boot_services.expect_raise_tpl().returning(|new_tpl| {
-            assert_eq!(new_tpl, efi::TPL_NOTIFY);
-            efi::TPL_APPLICATION
+            assert_eq!(new_tpl, Tpl::NOTIFY);
+            Tpl::APPLICATION
         });
 
         boot_services.expect_restore_tpl().returning(|new_tpl| {
-            assert_eq!(new_tpl, efi::TPL_APPLICATION);
+            assert_eq!(new_tpl, Tpl::APPLICATION);
             ()
         });
 
@@ -453,12 +446,12 @@ mod test {
 
         // expected on PointerHidHandler::receive_report
         boot_services.expect_raise_tpl().returning(|new_tpl| {
-            assert_eq!(new_tpl, efi::TPL_NOTIFY);
-            efi::TPL_APPLICATION
+            assert_eq!(new_tpl, Tpl::NOTIFY);
+            Tpl::APPLICATION
         });
 
         boot_services.expect_restore_tpl().returning(|new_tpl| {
-            assert_eq!(new_tpl, efi::TPL_APPLICATION);
+            assert_eq!(new_tpl, Tpl::APPLICATION);
             ()
         });
 
@@ -538,12 +531,12 @@ mod test {
 
         // expected on PointerHidHandler::receive_report
         boot_services.expect_raise_tpl().returning(|new_tpl| {
-            assert_eq!(new_tpl, efi::TPL_NOTIFY);
-            efi::TPL_APPLICATION
+            assert_eq!(new_tpl, Tpl::NOTIFY);
+            Tpl::APPLICATION
         });
 
         boot_services.expect_restore_tpl().returning(|new_tpl| {
-            assert_eq!(new_tpl, efi::TPL_APPLICATION);
+            assert_eq!(new_tpl, Tpl::APPLICATION);
             ()
         });
 

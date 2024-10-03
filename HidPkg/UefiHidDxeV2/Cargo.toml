@@ -20,10 +20,12 @@ path = "src/main.rs"
 HidIo = {workspace=true}
 hidparser = {workspace=true}
 HiiKeyboardLayout = {workspace=true}
+mu_rust_helpers = {workspace=true}
 r-efi = {workspace=true}
 rustversion = {workspace=true}
 RustAdvancedLoggerDxe = {workspace=true}
 scroll = {workspace=true}
+uuid = {workspace=true}
 
 [target.'cfg(target_os = "uefi")'.dependencies]
 RustBootServicesAllocatorDxe = {workspace=true}

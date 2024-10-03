@@ -11,3 +11,5 @@ path = "src/lib.rs"
 
 [dependencies]
 r-efi = {workspace=true}
+mu_rust_helpers = {workspace=true}
+uuid = {workspace=true}

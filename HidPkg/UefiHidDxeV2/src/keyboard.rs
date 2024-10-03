@@ -29,10 +29,12 @@ use hidparser::{
 };
 use rust_advanced_logger_dxe::{debugln, function, DEBUG_ERROR, DEBUG_VERBOSE, DEBUG_WARN};
 
+use mu_rust_helpers::boot_services::{event::EventType, protocol_handler, tpl::Tpl, BootServices};
+
 use crate::{
-    boot_services::UefiBootServices,
     hid_io::{HidIo, HidReportReceiver},
     keyboard::key_queue::OrdKeyData,
+    BOOT_SERVICES,
 };
 
 // usages supported by this module
@@ -76,13 +78,11 @@ struct KeyboardOutputReportBuilder {
 
 #[repr(C)]
 struct LayoutChangeContext {
-    boot_services: &'static dyn UefiBootServices,
     keyboard_handler: *mut KeyboardHidHandler,
 }
 
 /// Keyboard HID Handler
 pub struct KeyboardHidHandler {
-    boot_services: &'static dyn UefiBootServices,
     agent: efi::Handle,
     controller: Option<efi::Handle>,
     input_reports: BTreeMap<Option<ReportId>, KeyboardReportData>,
@@ -101,9 +101,8 @@ pub struct KeyboardHidHandler {
 
 impl KeyboardHidHandler {
     /// Instantiates a new Keyboard HID handler. `agent` is the handle that owns the handler (typically image_handle)
-    pub fn new(boot_services: &'static dyn UefiBootServices, agent: efi::Handle) -> Self {
+    pub fn new(agent: efi::Handle) -> Self {
         Self {
-            boot_services,
             agent,
             controller: None,
             input_reports: BTreeMap::new(),
@@ -273,8 +272,8 @@ impl KeyboardHidHandler {
 
     // Installs the FFI interfaces that provide keyboard support to the rest of the system
     fn install_protocol_interfaces(&mut self, controller: efi::Handle) -> Result<(), efi::Status> {
-        simple_text_in::SimpleTextInFfi::install(self.boot_services, controller, self)?;
-        simple_text_in_ex::SimpleTextInExFfi::install(self.boot_services, controller, self)?;
+        simple_text_in::SimpleTextInFfi::install(controller, self)?;
+        simple_text_in_ex::SimpleTextInExFfi::install(controller, self)?;
         self.controller = Some(controller);
 
         // after this point, access to self must be guarded by raising TPL to NOTIFY.
@@ -284,23 +283,20 @@ impl KeyboardHidHandler {
     // Installs an event to be notified when a new layout is installed. This allows the driver to respond dynamically to
     // installation of new layouts and handle keys accordingly.
     fn install_layout_change_event(&mut self) -> Result<(), efi::Status> {
-        let context = LayoutChangeContext { boot_services: self.boot_services, keyboard_handler: self as *mut Self };
-        let context_ptr = Box::into_raw(Box::new(context));
+        let context = LayoutChangeContext { keyboard_handler: self as *mut Self };
+        let context_ptr: *mut LayoutChangeContext = Box::into_raw(Box::new(context));
 
-        let mut layout_change_event: efi::Event = ptr::null_mut();
-        let status = self.boot_services.create_event_ex(
-            efi::EVT_NOTIFY_SIGNAL,
-            efi::TPL_NOTIFY,
-            Some(on_layout_update),
-            context_ptr as *mut c_void,
-            &protocols::hii_database::SET_KEYBOARD_LAYOUT_EVENT_GUID,
-            ptr::addr_of_mut!(layout_change_event),
-        );
-        if status.is_error() {
-            Err(status)?;
-        }
+        let event = unsafe {
+            BOOT_SERVICES.create_event_ex_unchecked(
+                EventType::NOTIFY_SIGNAL,
+                Tpl::NOTIFY,
+                on_layout_update,
+                context_ptr as *mut c_void,
+                &protocols::hii_database::SET_KEYBOARD_LAYOUT_EVENT_GUID,
+            )?
+        };
 
-        self.layout_change_event = layout_change_event;
+        self.layout_change_event = event;
         self.layout_context = context_ptr;
 
         Ok(())
@@ -310,8 +306,8 @@ impl KeyboardHidHandler {
     fn uninstall_layout_change_event(&mut self) -> Result<(), efi::Status> {
         if !self.layout_change_event.is_null() {
             let layout_change_event: efi::Handle = self.layout_change_event;
-            let status = self.boot_services.close_event(layout_change_event);
-            if status.is_error() {
+            let status = BOOT_SERVICES.close_event(layout_change_event);
+            if status.is_err() {
                 //An error here means the event was not closed, so in theory the notification_callback on it could still be fired.
                 //Mark the instance invalid by setting the keyboard_handler raw pointer to null, but leak the LayoutContext
                 //instance. Leaking context allows context usage in the callback should it fire.
@@ -319,7 +315,7 @@ impl KeyboardHidHandler {
                 unsafe {
                     (*self.layout_context).keyboard_handler = ptr::null_mut();
                 }
-                return Err(status);
+                return status;
             }
             // safe to drop layout change context.
             drop(unsafe { Box::from_raw(self.layout_context) });
@@ -331,25 +327,18 @@ impl KeyboardHidHandler {
 
     // Installs a default keyboard layout.
     fn install_default_layout(&mut self) -> Result<(), efi::Status> {
-        let mut hii_database_protocol_ptr: *mut protocols::hii_database::Protocol = ptr::null_mut();
-
-        let status = self.boot_services.locate_protocol(
-            &protocols::hii_database::PROTOCOL_GUID as *const efi::Guid as *mut efi::Guid,
-            ptr::null_mut(),
-            ptr::addr_of_mut!(hii_database_protocol_ptr) as *mut *mut c_void,
-        );
-        if status.is_error() {
+        let status = BOOT_SERVICES.locate_protocol(&protocol_handler::HiiDatabase, None);
+        if status.is_err() {
+            let status_code = status.err().unwrap();
             debugln!(
-        DEBUG_ERROR,
-        "keyboard::install_default_layout: Could not locate hii_database protocol to install keyboard layout: {:x?}",
-        status
-      );
-            Err(status)?;
+                DEBUG_ERROR,
+                "keyboard::install_default_layout: Could not locate hii_database protocol to install keyboard layout: {:x?}",
+                status_code
+            );
+            return Err(status_code);
         }
-
-        let hii_database_protocol = unsafe {
-            hii_database_protocol_ptr.as_mut().expect("Bad pointer returned from successful locate protocol.")
-        };
+        let hii_database_protocol = status.unwrap().unwrap();
+        let hii_database_protocol_ptr = hii_database_protocol as *mut protocols::hii_database::Protocol;
 
         let mut hii_handle: hii::Handle = ptr::null_mut();
         let status = (hii_database_protocol.new_package_list)(
@@ -529,7 +518,7 @@ impl HidReportReceiver for KeyboardHidHandler {
     }
 
     fn receive_report(&mut self, report: &[u8], hid_io: &dyn HidIo) {
-        let old_tpl = self.boot_services.raise_tpl(efi::TPL_NOTIFY);
+        let old_tpl = BOOT_SERVICES.raise_tpl(Tpl::NOTIFY);
 
         let mut output_reports = Vec::new();
         'report_processing: {
@@ -604,7 +593,7 @@ impl HidReportReceiver for KeyboardHidHandler {
                     //after processing all the key strokes, check if any keys were pressed that should trigger the notifier callback
                     //and if so, signal the event to trigger notify processing at the appropriate TPL.
                     if self.key_queue.peek_notify_key().is_some() {
-                        self.boot_services.signal_event(self.key_notify_event);
+                        let _ = BOOT_SERVICES.signal_event(self.key_notify_event);
                     }
 
                     //after processing all the key strokes, send updated LED state if required.
@@ -615,7 +604,7 @@ impl HidReportReceiver for KeyboardHidHandler {
             }
         }
 
-        self.boot_services.restore_tpl(old_tpl);
+        BOOT_SERVICES.restore_tpl(old_tpl);
 
         // if any output reports, send them after releasing handler.
         for (id, output_report) in output_reports {
@@ -630,13 +619,10 @@ impl HidReportReceiver for KeyboardHidHandler {
 impl Drop for KeyboardHidHandler {
     fn drop(&mut self) {
         if let Some(controller) = self.controller {
-            if let Err(status) = simple_text_in::SimpleTextInFfi::uninstall(self.boot_services, self.agent, controller)
-            {
+            if let Err(status) = simple_text_in::SimpleTextInFfi::uninstall(self.agent, controller) {
                 debugln!(DEBUG_ERROR, "KeyboardHidHandler::drop: Failed to uninstall simple_text_in: {:?}", status);
             }
-            if let Err(status) =
-                simple_text_in_ex::SimpleTextInExFfi::uninstall(self.boot_services, self.agent, controller)
-            {
+            if let Err(status) = simple_text_in_ex::SimpleTextInExFfi::uninstall(self.agent, controller) {
                 debugln!(DEBUG_ERROR, "KeyboardHidHandler::drop: Failed to uninstall simple_text_in: {:?}", status);
             }
         }
@@ -649,7 +635,7 @@ impl Drop for KeyboardHidHandler {
 // handles keyboard layout change event that occurs when a new keyboard layout is set.
 extern "efiapi" fn on_layout_update(_event: efi::Event, context: *mut c_void) {
     let context = unsafe { (context as *mut LayoutChangeContext).as_mut() }.expect("bad context pointer");
-    let old_tpl = context.boot_services.raise_tpl(efi::TPL_NOTIFY);
+    let old_tpl = BOOT_SERVICES.raise_tpl(Tpl::NOTIFY);
 
     'layout_processing: {
         if context.keyboard_handler.is_null() {
@@ -659,21 +645,15 @@ extern "efiapi" fn on_layout_update(_event: efi::Event, context: *mut c_void) {
 
         let keyboard_handler = unsafe { context.keyboard_handler.as_mut() }.expect("bad keyboard handler");
 
-        let mut hii_database_protocol_ptr: *mut protocols::hii_database::Protocol = ptr::null_mut();
-        let status = context.boot_services.locate_protocol(
-            &protocols::hii_database::PROTOCOL_GUID as *const efi::Guid as *mut efi::Guid,
-            ptr::null_mut(),
-            ptr::addr_of_mut!(hii_database_protocol_ptr) as *mut *mut c_void,
-        );
+        let status = BOOT_SERVICES.locate_protocol(&protocol_handler::HiiDatabase, None);
 
-        if status.is_error() {
+        if status.is_err() {
             //nothing to do if there is no hii protocol.
             break 'layout_processing;
         }
 
-        let hii_database_protocol = unsafe {
-            hii_database_protocol_ptr.as_mut().expect("Bad pointer returned from successful locate protocol.")
-        };
+        let hii_database_protocol = status.unwrap().unwrap();
+        let hii_database_protocol_ptr = hii_database_protocol as *mut protocols::hii_database::Protocol;
 
         // retrieve keyboard layout size
         let mut layout_buffer_len: u16 = 0;
@@ -721,7 +701,7 @@ extern "efiapi" fn on_layout_update(_event: efi::Event, context: *mut c_void) {
         }
     }
 
-    context.boot_services.restore_tpl(old_tpl);
+    BOOT_SERVICES.restore_tpl(old_tpl);
 }
 
 #[cfg(test)]
@@ -834,7 +814,7 @@ mod test {
         boot_services.expect_locate_protocol().returning(|_, _, _| efi::Status::NOT_FOUND);
         boot_services.expect_signal_event().returning(|_| efi::Status::SUCCESS);
         boot_services.expect_open_protocol().returning(|_, _, _, _, _, _| efi::Status::NOT_FOUND);
-        boot_services.expect_raise_tpl().returning(|_| efi::TPL_APPLICATION);
+        boot_services.expect_raise_tpl().returning(|_| Tpl::APPLICATION);
         boot_services.expect_restore_tpl().returning(|_| ());
 
         let mut keyboard_handler = KeyboardHidHandler::new(boot_services, 1 as efi::Handle);
@@ -857,7 +837,7 @@ mod test {
         boot_services.expect_locate_protocol().returning(|_, _, _| efi::Status::NOT_FOUND);
         boot_services.expect_signal_event().returning(|_| efi::Status::SUCCESS);
         boot_services.expect_open_protocol().returning(|_, _, _, _, _, _| efi::Status::NOT_FOUND);
-        boot_services.expect_raise_tpl().returning(|_| efi::TPL_APPLICATION);
+        boot_services.expect_raise_tpl().returning(|_| Tpl::APPLICATION);
         boot_services.expect_restore_tpl().returning(|_| ());
 
         let mut keyboard_handler = KeyboardHidHandler::new(boot_services, 1 as efi::Handle);
@@ -973,7 +953,7 @@ mod test {
         boot_services.expect_install_protocol_interface().returning(|_, _, _, _| efi::Status::SUCCESS);
         boot_services.expect_signal_event().returning(|_| efi::Status::SUCCESS);
         boot_services.expect_open_protocol().returning(|_, _, _, _, _, _| efi::Status::NOT_FOUND);
-        boot_services.expect_raise_tpl().returning(|_| efi::TPL_APPLICATION);
+        boot_services.expect_raise_tpl().returning(|_| Tpl::APPLICATION);
         boot_services.expect_restore_tpl().returning(|_| ());
         boot_services.expect_close_event().returning(|_| efi::Status::SUCCESS);
 
@@ -1034,7 +1014,7 @@ mod test {
             _key_guid: *mut efi::Guid,
         ) -> efi::Status {
             let boot_services = create_fake_static_boot_service();
-            boot_services.expect_raise_tpl().returning(|_| efi::TPL_APPLICATION);
+            boot_services.expect_raise_tpl().returning(|_| Tpl::APPLICATION);
             boot_services.expect_restore_tpl().returning(|_| ());
             boot_services.expect_signal_event().returning(|_| efi::Status::SUCCESS);
 
@@ -1102,7 +1082,7 @@ mod test {
         boot_services.expect_locate_protocol().returning(|_, _, _| efi::Status::NOT_FOUND);
         boot_services.expect_signal_event().returning(|_| efi::Status::SUCCESS);
         boot_services.expect_open_protocol().returning(|_, _, _, _, _, _| efi::Status::NOT_FOUND);
-        boot_services.expect_raise_tpl().returning(|_| efi::TPL_APPLICATION);
+        boot_services.expect_raise_tpl().returning(|_| Tpl::APPLICATION);
         boot_services.expect_restore_tpl().returning(|_| ());
 
         let mut keyboard_handler = KeyboardHidHandler::new(boot_services, 1 as efi::Handle);
@@ -1151,7 +1131,7 @@ mod test {
         boot_services.expect_locate_protocol().returning(|_, _, _| efi::Status::NOT_FOUND);
         boot_services.expect_signal_event().returning(|_| efi::Status::SUCCESS);
         boot_services.expect_open_protocol().returning(|_, _, _, _, _, _| efi::Status::NOT_FOUND);
-        boot_services.expect_raise_tpl().returning(|_| efi::TPL_APPLICATION);
+        boot_services.expect_raise_tpl().returning(|_| Tpl::APPLICATION);
         boot_services.expect_restore_tpl().returning(|_| ());
 
         let mut keyboard_handler = KeyboardHidHandler::new(boot_services, 1 as efi::Handle);
@@ -1215,7 +1195,7 @@ mod test {
         boot_services.expect_locate_protocol().returning(|_, _, _| efi::Status::NOT_FOUND);
         boot_services.expect_signal_event().returning(|_| efi::Status::SUCCESS);
         boot_services.expect_open_protocol().returning(|_, _, _, _, _, _| efi::Status::NOT_FOUND);
-        boot_services.expect_raise_tpl().returning(|_| efi::TPL_APPLICATION);
+        boot_services.expect_raise_tpl().returning(|_| Tpl::APPLICATION);
         boot_services.expect_restore_tpl().returning(|_| ());
 
         let mut keyboard_handler = KeyboardHidHandler::new(boot_services, 1 as efi::Handle);

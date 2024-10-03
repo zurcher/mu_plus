@@ -17,11 +17,12 @@ use core::{ffi::c_void, ptr, slice::from_raw_parts_mut};
 use mockall::automock;
 use r_efi::efi;
 
-use hid_io::protocol::HidReportType;
+use hid_io::{interface::HidIoProtocol, protocol::HidReportType};
 use hidparser::ReportDescriptor;
 use rust_advanced_logger_dxe::{debugln, DEBUG_ERROR};
 
-use crate::boot_services::UefiBootServices;
+use crate::BOOT_SERVICES;
+use mu_rust_helpers::boot_services::BootServices;
 
 /// Defines an interface to be implemented by logic that wants to receive hid reports.
 #[cfg_attr(test, automock)]
@@ -58,21 +59,20 @@ pub trait HidIoFactory {
 
 /// Implements the HidIoFactory interface using UEFI boot services to open HidIo protocols on supported controllers.
 pub struct UefiHidIoFactory {
-    boot_services: &'static dyn UefiBootServices,
     agent: efi::Handle,
 }
 
 impl UefiHidIoFactory {
     /// Creates a new UefiHidIoFactory. `agent` represents the owner of the factory (typically the image_handle).
-    pub fn new(boot_services: &'static dyn UefiBootServices, agent: efi::Handle) -> Self {
-        UefiHidIoFactory { boot_services, agent }
+    pub fn new(agent: efi::Handle) -> Self {
+        UefiHidIoFactory {agent }
     }
 }
 
 impl HidIoFactory for UefiHidIoFactory {
     /// instantiate a new UefiHidIo instance on the given controller.
     fn new_hid_io(&self, controller: efi::Handle, owned: bool) -> Result<Box<dyn HidIo>, efi::Status> {
-        let hid_io = UefiHidIo::new(self.boot_services, self.agent, controller, owned)?;
+        let hid_io = UefiHidIo::new(self.agent, controller, owned)?;
         Ok(Box::new(hid_io))
     }
 }
@@ -80,7 +80,6 @@ impl HidIoFactory for UefiHidIoFactory {
 /// Implements the HidIo interface on top of the HidIo protocol.
 pub struct UefiHidIo {
     hid_io: &'static mut hid_io::protocol::Protocol,
-    boot_services: &'static dyn UefiBootServices,
     controller: efi::Handle,
     agent: efi::Handle,
     receiver: Option<Box<dyn HidReportReceiver>>,
@@ -91,13 +90,10 @@ impl UefiHidIo {
     // creates a new HidIo - private, intended only to be invoked by the [`UefiHidIoFactory`] implementation.
     // if `owned`, then the interface is opened BY_DRIVER, otherwise it is opened with GET_PROTOCOL.
     fn new(
-        boot_services: &'static dyn UefiBootServices,
         agent: efi::Handle,
         controller: efi::Handle,
         owned: bool,
     ) -> Result<Self, efi::Status> {
-        let mut hid_io_ptr: *mut hid_io::protocol::Protocol = ptr::null_mut();
-
         let attributes = {
             if owned {
                 efi::OPEN_PROTOCOL_BY_DRIVER
@@ -106,21 +102,15 @@ impl UefiHidIo {
             }
         };
 
-        let status = boot_services.open_protocol(
+        let hid_io = BOOT_SERVICES.open_protocol(
             controller,
-            &hid_io::protocol::GUID as *const efi::Guid as *mut efi::Guid,
-            ptr::addr_of_mut!(hid_io_ptr) as *mut *mut c_void,
+            &HidIoProtocol,
             agent,
             controller,
             attributes,
-        );
+        )?;
 
-        if status.is_error() {
-            return Err(status);
-        }
-
-        let hid_io = unsafe { hid_io_ptr.as_mut().expect("bad hid_io ptr") };
-        Ok(Self { hid_io, boot_services, controller, agent, receiver: None, owned })
+        Ok(Self { hid_io: hid_io.unwrap(), controller, agent, receiver: None, owned })
     }
 
     // the report callback FFI interface that is submitted to the HidIo instance to receive callbacks for reports.
@@ -139,13 +129,13 @@ impl Drop for UefiHidIo {
     fn drop(&mut self) {
         if self.owned {
             let _ = self.take_report_receiver();
-            let status = self.boot_services.close_protocol(
+            let status = BOOT_SERVICES.close_protocol(
                 self.controller,
-                &hid_io::protocol::GUID as *const efi::Guid as *mut efi::Guid,
+                &HidIoProtocol,
                 self.agent,
                 self.controller,
             );
-            if status.is_error() {
+            if status.is_err() {
                 debugln!(DEBUG_ERROR, "Unexpected error closing hid_io: {:x?}", status);
             }
         }

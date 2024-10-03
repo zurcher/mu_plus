@@ -25,10 +25,9 @@ use hidparser::{
 use rust_advanced_logger_dxe::{debugln, function, DEBUG_ERROR, DEBUG_VERBOSE};
 
 use self::absolute_pointer::PointerContext;
-use crate::{
-    boot_services::UefiBootServices,
-    hid_io::{HidIo, HidReportReceiver},
-};
+use mu_rust_helpers::boot_services::{BootServices, tpl::Tpl};
+
+use crate::{BOOT_SERVICES, hid_io::{HidIo, HidReportReceiver}};
 
 // Usages supported by this module.
 const GENERIC_DESKTOP_X: u32 = 0x00010030;
@@ -61,7 +60,6 @@ struct PointerReportData {
 
 /// Pointer HID Handler
 pub struct PointerHidHandler {
-    boot_services: &'static dyn UefiBootServices,
     agent: efi::Handle,
     controller: Option<efi::Handle>,
     input_reports: BTreeMap<Option<ReportId>, PointerReportData>,
@@ -73,9 +71,8 @@ pub struct PointerHidHandler {
 
 impl PointerHidHandler {
     /// Instantiates a new Pointer HID handler. `agent` is the handle that owns the handler (typically image_handle).
-    pub fn new(boot_services: &'static dyn UefiBootServices, agent: efi::Handle) -> Self {
+    pub fn new(agent: efi::Handle) -> Self {
         let mut handler = Self {
-            boot_services,
             agent,
             controller: None,
             input_reports: BTreeMap::new(),
@@ -246,14 +243,14 @@ impl HidReportReceiver for PointerHidHandler {
         let descriptor = hid_io.get_report_descriptor()?;
         self.process_descriptor(descriptor)?;
 
-        PointerContext::install(self.boot_services, controller, self)?;
+        PointerContext::install(controller, self)?;
 
         self.controller = Some(controller);
 
         Ok(())
     }
     fn receive_report(&mut self, report: &[u8], _hid_io: &dyn HidIo) {
-        let old_tpl = self.boot_services.raise_tpl(efi::TPL_NOTIFY);
+        let old_tpl = BOOT_SERVICES.raise_tpl(Tpl::NOTIFY);
 
         'report_processing: {
             if report.is_empty() {
@@ -293,14 +290,14 @@ impl HidReportReceiver for PointerHidHandler {
             }
         }
 
-        self.boot_services.restore_tpl(old_tpl);
+        BOOT_SERVICES.restore_tpl(old_tpl);
     }
 }
 
 impl Drop for PointerHidHandler {
     fn drop(&mut self) {
         if let Some(controller) = self.controller {
-            let status = PointerContext::uninstall(self.boot_services, self.agent, controller);
+            let status = PointerContext::uninstall(self.agent, controller);
             if status.is_err() {
                 debugln!(DEBUG_ERROR, "{:?}: Failed to uninstall absolute_pointer: {:?}", function!(), status);
             }
@@ -476,12 +473,12 @@ mod test {
 
         // expected on PointerHidHandler::receive_report
         boot_services.expect_raise_tpl().returning(|new_tpl| {
-            assert_eq!(new_tpl, efi::TPL_NOTIFY);
-            efi::TPL_APPLICATION
+            assert_eq!(new_tpl, Tpl::NOTIFY);
+            Tpl::APPLICATION
         });
 
         boot_services.expect_restore_tpl().returning(|new_tpl| {
-            assert_eq!(new_tpl, efi::TPL_APPLICATION);
+            assert_eq!(new_tpl, Tpl::APPLICATION);
             ()
         });
 
@@ -572,12 +569,12 @@ mod test {
 
         // expected on PointerHidHandler::receive_report
         boot_services.expect_raise_tpl().returning(|new_tpl| {
-            assert_eq!(new_tpl, efi::TPL_NOTIFY);
-            efi::TPL_APPLICATION
+            assert_eq!(new_tpl, Tpl::NOTIFY);
+            Tpl::APPLICATION
         });
 
         boot_services.expect_restore_tpl().returning(|new_tpl| {
-            assert_eq!(new_tpl, efi::TPL_APPLICATION);
+            assert_eq!(new_tpl, Tpl::APPLICATION);
             ()
         });
 
@@ -631,12 +628,12 @@ mod test {
 
         // expected on PointerHidHandler::receive_report
         boot_services.expect_raise_tpl().returning(|new_tpl| {
-            assert_eq!(new_tpl, efi::TPL_NOTIFY);
-            efi::TPL_APPLICATION
+            assert_eq!(new_tpl, Tpl::NOTIFY);
+            Tpl::APPLICATION
         });
 
         boot_services.expect_restore_tpl().returning(|new_tpl| {
-            assert_eq!(new_tpl, efi::TPL_APPLICATION);
+            assert_eq!(new_tpl, Tpl::APPLICATION);
             ()
         });
 

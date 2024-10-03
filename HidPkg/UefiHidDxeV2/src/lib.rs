@@ -23,7 +23,6 @@
 
 extern crate alloc;
 
-pub mod boot_services;
 pub mod driver_binding;
 pub mod hid;
 pub mod hid_io;
@@ -34,10 +33,10 @@ use core::{ptr, sync::atomic::AtomicPtr};
 
 use r_efi::efi;
 
-use boot_services::StandardUefiBootServices;
+use mu_rust_helpers::boot_services::StandardBootServices;
 
 /// Global instance of UEFI Boot Services.
-pub static BOOT_SERVICES: StandardUefiBootServices = StandardUefiBootServices::new();
+pub static BOOT_SERVICES: StandardBootServices = StandardBootServices::new_uninit();
 
 /// Global instance of UEFI Runtime Services.
 pub static RUNTIME_SERVICES: AtomicPtr<efi::RuntimeServices> = AtomicPtr::new(ptr::null_mut());

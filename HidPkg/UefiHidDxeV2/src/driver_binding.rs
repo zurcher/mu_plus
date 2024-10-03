@@ -8,13 +8,13 @@
 //! SPDX-License-Identifier: BSD-2-Clause-Patent
 //!
 use alloc::boxed::Box;
-use core::ffi::c_void;
 
 #[cfg(test)]
 use mockall::automock;
 use r_efi::{efi, protocols};
 
-use crate::boot_services::UefiBootServices;
+use crate::BOOT_SERVICES;
+use mu_rust_helpers::boot_services::{protocol_handler, BootServices};
 
 /// Abstracts the UEFI driver binding interface.
 ///
@@ -26,23 +26,11 @@ use crate::boot_services::UefiBootServices;
 #[cfg_attr(test, automock)]
 pub trait DriverBinding {
     /// Reference: <https://uefi.org/specs/UEFI/2.10/11_Protocols_UEFI_Driver_Model.html#efi-driver-binding-protocol-supported>
-    fn driver_binding_supported(
-        &mut self,
-        boot_services: &'static dyn UefiBootServices,
-        controller: efi::Handle,
-    ) -> Result<(), efi::Status>;
+    fn driver_binding_supported(&mut self, controller: efi::Handle) -> Result<(), efi::Status>;
     /// Reference: <https://uefi.org/specs/UEFI/2.10/11_Protocols_UEFI_Driver_Model.html#efi-driver-binding-protocol-start>
-    fn driver_binding_start(
-        &mut self,
-        boot_services: &'static dyn UefiBootServices,
-        controller: efi::Handle,
-    ) -> Result<(), efi::Status>;
+    fn driver_binding_start(&mut self, controller: efi::Handle) -> Result<(), efi::Status>;
     /// Reference: <https://uefi.org/specs/UEFI/2.10/11_Protocols_UEFI_Driver_Model.html#efi-driver-binding-protocol-stop>
-    fn driver_binding_stop(
-        &mut self,
-        boot_services: &'static dyn UefiBootServices,
-        controller: efi::Handle,
-    ) -> Result<(), efi::Status>;
+    fn driver_binding_stop(&mut self, controller: efi::Handle) -> Result<(), efi::Status>;
 }
 
 /// Manages FFI for a driver binding instance with UEFI core.
@@ -54,7 +42,6 @@ pub trait DriverBinding {
 ///
 /// let driver_binding = Box::new(MyDriverBinding::new());
 /// let uefi_driver_binding = UefiDriverBinding::new(
-///   boot_services,
 ///   driver_binding,
 ///   driver_handle
 /// );
@@ -66,17 +53,12 @@ pub trait DriverBinding {
 #[repr(C)]
 pub struct UefiDriverBinding {
     uefi_binding: protocols::driver_binding::Protocol,
-    boot_services: &'static dyn UefiBootServices,
     binding: Box<dyn DriverBinding>,
 }
 
 impl UefiDriverBinding {
     /// Creates a new UefiDriverBinding that manages the given binding.
-    pub fn new(
-        boot_services: &'static dyn UefiBootServices,
-        binding: Box<dyn DriverBinding>,
-        handle: efi::Handle,
-    ) -> Self {
+    pub fn new(binding: Box<dyn DriverBinding>, handle: efi::Handle) -> Self {
         let uefi_binding = protocols::driver_binding::Protocol {
             supported: Self::driver_binding_supported,
             start: Self::driver_binding_start,
@@ -85,43 +67,37 @@ impl UefiDriverBinding {
             image_handle: handle,
             driver_binding_handle: handle,
         };
-        Self { uefi_binding, boot_services, binding }
+        Self { uefi_binding, binding }
     }
 
     /// Installs the binding with the UEFI core.
-    pub fn install(self) -> Result<*mut UefiDriverBinding, efi::Status> {
-        let mut handle = self.uefi_binding.driver_binding_handle;
-        let uefi_driver_binding_mgr_ptr = Box::into_raw(Box::new(self));
-        let boot_services = &unsafe { uefi_driver_binding_mgr_ptr.as_ref().unwrap() }.boot_services;
-        let status = boot_services.install_protocol_interface(
-            core::ptr::addr_of_mut!(handle),
-            &protocols::driver_binding::PROTOCOL_GUID as *const efi::Guid as *mut efi::Guid,
-            efi::NATIVE_INTERFACE,
-            uefi_driver_binding_mgr_ptr as *mut c_void,
+    pub fn install(self) -> Result<(), efi::Status> {
+        let handle = self.uefi_binding.driver_binding_handle;
+        let uefi_driver_binding: &'static mut UefiDriverBinding = Box::leak(Box::new(self));
+        // Hold raw reference in case install fails
+        let uefi_driver_binding_raw = uefi_driver_binding as *mut UefiDriverBinding;
+
+        let status = BOOT_SERVICES.install_protocol_interface(
+            Some(handle),
+            &protocol_handler::DriverBinding,
+            &mut uefi_driver_binding.uefi_binding,
         );
-        if status.is_error() {
-            Err(status)
-        } else {
-            Ok(uefi_driver_binding_mgr_ptr)
+        if status.is_err() {
+            drop(unsafe { Box::from_raw(uefi_driver_binding_raw) });
+            status?;
         }
+        Ok(())
     }
 
     /// Uninstalls the binding from the UEFI core.
-    /// # Safety
-    /// uefi_binding must be the same pointer returned from [`Self::install`].
-    pub unsafe fn uninstall(uefi_binding: *mut UefiDriverBinding) -> Result<Self, efi::Status> {
-        let ptr = uefi_binding;
-        let binding = Box::from_raw(uefi_binding);
-        let status = binding.boot_services.uninstall_protocol_interface(
-            binding.uefi_binding.driver_binding_handle,
-            &protocols::driver_binding::PROTOCOL_GUID as *const efi::Guid as *mut efi::Guid,
-            ptr as *mut c_void,
-        );
-        if status.is_error() {
-            Err(status)
-        } else {
-            Ok(*binding)
+    pub fn uninstall(handle: efi::Handle) -> Result<(), efi::Status> {
+        unsafe {
+            let interface = BOOT_SERVICES.handle_protocol_unchecked(handle, &protocol_handler::DriverBinding)?;
+            // SAFETY: `interface` is expected to be valid if handle_protocol didn't return Err
+            BOOT_SERVICES.uninstall_protocol_interface_unchecked(handle, &protocol_handler::DriverBinding, interface)?;
+            drop(Box::from_raw(interface as *mut UefiDriverBinding));
         }
+        Ok(())
     }
 
     // Driver Binding Supported FFI function
@@ -132,7 +108,7 @@ impl UefiDriverBinding {
         _remaining_device_path: *mut protocols::device_path::Protocol,
     ) -> efi::Status {
         let uefi_binding = unsafe { (this as *mut UefiDriverBinding).as_mut() }.expect("bad this pointer");
-        match uefi_binding.binding.driver_binding_supported(uefi_binding.boot_services, controller) {
+        match uefi_binding.binding.driver_binding_supported(controller) {
             Ok(_) => efi::Status::SUCCESS,
             Err(err) => err,
         }
@@ -146,7 +122,7 @@ impl UefiDriverBinding {
         _remaining_device_path: *mut protocols::device_path::Protocol,
     ) -> efi::Status {
         let uefi_binding = unsafe { (this as *mut UefiDriverBinding).as_mut() }.expect("bad this pointer");
-        match uefi_binding.binding.driver_binding_start(uefi_binding.boot_services, controller) {
+        match uefi_binding.binding.driver_binding_start(controller) {
             Ok(_) => efi::Status::SUCCESS,
             Err(err) => err,
         }
@@ -161,7 +137,7 @@ impl UefiDriverBinding {
         _child_handle_buffer: *mut efi::Handle,
     ) -> efi::Status {
         let uefi_binding = unsafe { (this as *mut UefiDriverBinding).as_mut() }.expect("bad this pointer");
-        match uefi_binding.binding.driver_binding_stop(uefi_binding.boot_services, controller) {
+        match uefi_binding.binding.driver_binding_stop(controller) {
             Ok(_) => efi::Status::SUCCESS,
             Err(err) => err,
         }
