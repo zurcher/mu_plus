@@ -19,7 +19,7 @@ use alloc::{
     vec,
     vec::Vec,
 };
-use core::{ffi::c_void, ptr};
+use core::ptr;
 
 use r_efi::{efi, hii, protocols};
 
@@ -31,6 +31,7 @@ use mu_rust_helpers::function;
 use rust_advanced_logger_dxe::{debugln, DEBUG_ERROR, DEBUG_VERBOSE, DEBUG_WARN};
 
 use mu_rust_helpers::boot_services::{event::EventType, protocol_handler, tpl::Tpl, BootServices};
+use mu_rust_helpers::tpl_mutex::TplMutex;
 
 use crate::{
     hid_io::{HidIo, HidReportReceiver},
@@ -79,7 +80,7 @@ struct KeyboardOutputReportBuilder {
 
 #[repr(C)]
 struct LayoutChangeContext {
-    keyboard_handler: *mut KeyboardHidHandler,
+    keyboard_handler: TplMutex<'static, *mut KeyboardHidHandler>,
 }
 
 /// Keyboard HID Handler
@@ -97,7 +98,7 @@ pub struct KeyboardHidHandler {
     next_notify_handle: usize,
     key_notify_event: efi::Event,
     layout_change_event: efi::Event,
-    layout_context: *mut LayoutChangeContext,
+    layout_context: Option<&'static LayoutChangeContext>,
 }
 
 impl KeyboardHidHandler {
@@ -117,7 +118,7 @@ impl KeyboardHidHandler {
             next_notify_handle: 0,
             key_notify_event: core::ptr::null_mut(),
             layout_change_event: core::ptr::null_mut(),
-            layout_context: core::ptr::null_mut(),
+            layout_context: None,
         }
     }
 
@@ -284,21 +285,20 @@ impl KeyboardHidHandler {
     // Installs an event to be notified when a new layout is installed. This allows the driver to respond dynamically to
     // installation of new layouts and handle keys accordingly.
     fn install_layout_change_event(&mut self) -> Result<(), efi::Status> {
-        let context = LayoutChangeContext { keyboard_handler: self as *mut Self };
-        let context_ptr: *mut LayoutChangeContext = Box::into_raw(Box::new(context));
+        let context =
+            LayoutChangeContext { keyboard_handler: TplMutex::new(&BOOT_SERVICES, Tpl::NOTIFY, self as *mut Self) };
+        let context_ref: &LayoutChangeContext = Box::leak::<'static>(Box::new(context));
 
-        let event = unsafe {
-            BOOT_SERVICES.create_event_ex_unchecked(
-                EventType::NOTIFY_SIGNAL,
-                Tpl::NOTIFY,
-                on_layout_update,
-                context_ptr as *mut c_void,
-                &protocols::hii_database::SET_KEYBOARD_LAYOUT_EVENT_GUID,
-            )?
-        };
+        let event = BOOT_SERVICES.create_event_ex(
+            EventType::NOTIFY_SIGNAL,
+            Tpl::NOTIFY,
+            Some(on_layout_update),
+            Some(context_ref),
+            &protocols::hii_database::SET_KEYBOARD_LAYOUT_EVENT_GUID,
+        )?;
 
         self.layout_change_event = event;
-        self.layout_context = context_ptr;
+        self.layout_context = Some(context_ref);
 
         Ok(())
     }
@@ -314,13 +314,13 @@ impl KeyboardHidHandler {
                 //instance. Leaking context allows context usage in the callback should it fire.
                 debugln!(DEBUG_ERROR, "Failed to close layout_change_event event, status: {:x?}", status);
                 unsafe {
-                    (*self.layout_context).keyboard_handler = ptr::null_mut();
+                    (&self.layout_context).keyboard_handler = None;
                 }
                 return status;
             }
             // safe to drop layout change context.
             drop(unsafe { Box::from_raw(self.layout_context) });
-            self.layout_context = ptr::null_mut();
+            self.layout_context = None;
             self.layout_change_event = ptr::null_mut();
         }
         Ok(())
@@ -375,7 +375,7 @@ impl KeyboardHidHandler {
         self.install_layout_change_event()?;
 
         //fake signal event to pick up any existing layout
-        on_layout_update(self.layout_change_event, self.layout_context as *mut c_void);
+        on_layout_update(self.layout_change_event, self.layout_context);
 
         //install a default layout if no layout is installed.
         if self.key_queue.layout().is_none() {
@@ -634,8 +634,8 @@ impl Drop for KeyboardHidHandler {
 }
 
 // handles keyboard layout change event that occurs when a new keyboard layout is set.
-extern "efiapi" fn on_layout_update(_event: efi::Event, context: *mut c_void) {
-    let context = unsafe { (context as *mut LayoutChangeContext).as_mut() }.expect("bad context pointer");
+extern "efiapi" fn on_layout_update(_event: efi::Event, context: Option<&'static LayoutChangeContext>) {
+    let context = context.expect("bad context pointer");
     let old_tpl = BOOT_SERVICES.raise_tpl(Tpl::NOTIFY);
 
     'layout_processing: {
