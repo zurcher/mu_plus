@@ -15,6 +15,7 @@ use mockall::automock;
 use r_efi::{efi, protocols};
 
 use crate::boot_services::UefiBootServices;
+use mu_rust_helpers::boot_services;
 
 /// Abstracts the UEFI driver binding interface.
 ///
