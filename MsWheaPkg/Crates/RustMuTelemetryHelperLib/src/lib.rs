@@ -34,7 +34,7 @@ mod status_code_runtime;
 use mu_pi::protocols::status_code::{EfiStatusCodeType, EfiStatusCodeValue};
 use mu_pi::status_code::{EFI_ERROR_CODE, EFI_ERROR_MAJOR, EFI_ERROR_MINOR};
 use mu_rust_helpers::{
-    boot_services::StandardBootServices,
+    boot_services::{BootServices, StandardBootServices},
     guid,
     guid::{guid, guid_fmt},
 };
@@ -92,6 +92,7 @@ struct MsWheaRscInternalErrorData {
 ///   @param[in]  LibraryId     This should identify the library that is emitting this event.
 ///   @param[in]  IhvId         This should identify the Ihv related to this event if applicable. For example,
 ///                             this would typically be used for TPM and SOC specific events.
+#[cfg(not(tarpaulin_include))]
 pub fn log_telemetry(
     is_fatal: bool,
     class_id: EfiStatusCodeValue,
@@ -101,9 +102,30 @@ pub fn log_telemetry(
     library_id: Option<&efi::Guid>,
     ihv_id: Option<&efi::Guid>,
 ) -> Result<(), efi::Status> {
-    let status_code_type = if is_fatal { MS_WHEA_ERROR_STATUS_TYPE_FATAL } else { MS_WHEA_ERROR_STATUS_TYPE_INFO };
+    log_telemetry_internal(
+        &BOOT_SERVICES,
+        is_fatal,
+        class_id,
+        extra_data1,
+        extra_data2,
+        component_id,
+        library_id,
+        ihv_id,
+    )
+}
 
-    let caller_id = component_id.or(Some(&guid::CALLER_ID));
+fn log_telemetry_internal<B: BootServices>(
+    boot_services: &B,
+    is_fatal: bool,
+    class_id: EfiStatusCodeValue,
+    extra_data1: u64,
+    extra_data2: u64,
+    component_id: Option<&efi::Guid>,
+    library_id: Option<&efi::Guid>,
+    ihv_id: Option<&efi::Guid>,
+) -> Result<(), efi::Status> {
+    let status_code_type: EfiStatusCodeType =
+        if is_fatal { MS_WHEA_ERROR_STATUS_TYPE_FATAL } else { MS_WHEA_ERROR_STATUS_TYPE_INFO };
 
     let error_data = MsWheaRscInternalErrorData {
         library_id: *library_id.unwrap_or(&guid::ZERO),
@@ -112,32 +134,97 @@ pub fn log_telemetry(
         additional_info_2: extra_data2,
     };
 
-    debugln!(DEBUG_INFO, "[RustMuTelemetryHelperLib] caller_id: {}", guid_fmt!(caller_id.unwrap()));
     debugln!(DEBUG_INFO, "[RustMuTelemetryHelperLib] extended_data_guid: {}", guid_fmt!(MS_WHEA_RSC_DATA_TYPE_GUID));
 
     StatusCodeRuntimeProtocol::report_status_code(
-        &BOOT_SERVICES,
+        boot_services,
         status_code_type,
         class_id,
         0,
-        caller_id,
+        component_id,
         MS_WHEA_RSC_DATA_TYPE_GUID,
         error_data,
     )
 }
 
+#[cfg(not(tarpaulin_include))]
 pub fn init_telemetry(efi_boot_services: &efi::BootServices) {
     BOOT_SERVICES.initialize(efi_boot_services)
 }
 
 #[cfg(test)]
+#[allow(unused_imports)]
 mod test {
-    use crate::{log_telemetry, MsWheaRscInternalErrorData};
+    use boot_services::{allocation::MemoryType, BootServices, MockBootServices};
+    use mu_pi::protocols::status_code::{EfiStatusCodeData, EfiStatusCodeType, EfiStatusCodeValue};
+    use mu_rust_helpers::guid::{guid, guid_fmt};
+    use r_efi::efi;
+    use rust_advanced_logger_dxe::{debugln, DEBUG_INFO};
+    use uuid::uuid;
+
+    use crate::{
+        log_telemetry_internal,
+        status_code_runtime::{StatusCodeRuntimeInterface, StatusCodeRuntimeProtocol},
+        MsWheaRscInternalErrorData, MS_WHEA_ERROR_STATUS_TYPE_FATAL,
+    };
     use core::mem::size_of;
+
+    const DATA_SIZE: usize = size_of::<EfiStatusCodeData>() + size_of::<MsWheaRscInternalErrorData>();
+    const MOCK_CALLER_ID: efi::Guid = guid!("d0d1d2d3-d4d5-d6d7-d8d9-dadbdcdddedf");
+    const MOCK_STATUS_CODE_VALUE: EfiStatusCodeValue = 0xa0a1a2a3;
+
+    extern "efiapi" fn mock_report_status_code(
+        r#type: EfiStatusCodeType,
+        value: EfiStatusCodeValue,
+        instance: u32,
+        caller_id: *const efi::Guid,     // Optional
+        _data: *const EfiStatusCodeData, // Optional
+    ) -> efi::Status {
+        assert_eq!(r#type, MS_WHEA_ERROR_STATUS_TYPE_FATAL);
+        assert_eq!(value, MOCK_STATUS_CODE_VALUE);
+        assert_eq!(instance, 0);
+        assert_eq!(unsafe { *caller_id }, MOCK_CALLER_ID);
+        debugln!(DEBUG_INFO, "[MockStatusCodeRuntime] caller_id: {}", guid_fmt!(unsafe { *caller_id }));
+        efi::Status::SUCCESS
+    }
+
+    static MOCK_STATUS_CODE_RUNTIME_INTERFACE: StatusCodeRuntimeInterface =
+        StatusCodeRuntimeInterface { report_status_code: mock_report_status_code };
 
     #[test]
     fn try_log_telemetry() {
+        let mut mock_boot_services: MockBootServices = MockBootServices::new();
+
+        mock_boot_services.expect_locate_protocol().returning(|_: &StatusCodeRuntimeProtocol, registration| unsafe {
+            assert_eq!(registration, None);
+            Ok(Some(
+                (&MOCK_STATUS_CODE_RUNTIME_INTERFACE as *const StatusCodeRuntimeInterface
+                    as *mut StatusCodeRuntimeInterface)
+                    .as_mut()
+                    .unwrap(),
+            ))
+        });
+
+        // mock_boot_services.expect_allocate_pool().returning(|pool_type, size| {
+        //     assert_eq!(pool_type, MemoryType::BOOT_SERVICES_DATA);
+        //     assert_eq!(size, DATA_SIZE);
+        //     Ok(Box::into_raw(Box::new([0u8; DATA_SIZE])) as *mut u8)
+        // });
+
         assert_eq!(size_of::<MsWheaRscInternalErrorData>(), 48);
-        assert_eq!(Ok(()), log_telemetry(false, 0, 0, 0, None, None, None));
+        assert_eq!(size_of::<[u8; 68]>(), DATA_SIZE);
+        assert_eq!(
+            Ok(()),
+            log_telemetry_internal(
+                &mock_boot_services,
+                true,
+                MOCK_STATUS_CODE_VALUE,
+                0xb0b1b2b3b4b5b6b7,
+                0xc0c1c2c3c4c5c6c7,
+                Some(&MOCK_CALLER_ID),
+                Some(&guid!("e0e1e2e3-e4e5-e6e7-e8e9-eaebecedeeef")),
+                Some(&guid!("f0f1f2f3-f4f5-f6f7-f8f9-fafbfcfdfeff"))
+            )
+        );
     }
 }
