@@ -205,12 +205,6 @@ mod test {
             ))
         });
 
-        // mock_boot_services.expect_allocate_pool().returning(|pool_type, size| {
-        //     assert_eq!(pool_type, MemoryType::BOOT_SERVICES_DATA);
-        //     assert_eq!(size, DATA_SIZE);
-        //     Ok(Box::into_raw(Box::new([0u8; DATA_SIZE])) as *mut u8)
-        // });
-
         assert_eq!(size_of::<MsWheaRscInternalErrorData>(), 48);
         assert_eq!(size_of::<[u8; 68]>(), DATA_SIZE);
         assert_eq!(

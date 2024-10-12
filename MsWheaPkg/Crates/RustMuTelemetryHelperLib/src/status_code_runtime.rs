@@ -78,10 +78,6 @@ impl ReportStatusCode for StatusCodeRuntimeProtocol {
         let mut data_buffer = vec![0u8; header_size + data_size];
         let data_ptr: *mut EfiStatusCodeData = data_buffer.as_mut_ptr() as *mut EfiStatusCodeData;
 
-        // let data_ptr = boot_services
-        //     .allocate_pool(MemoryType::BOOT_SERVICES_DATA, mem::size_of::<EfiStatusCodeData>() + mem::size_of::<T>())?
-        //     as *mut EfiStatusCodeData;
-
         unsafe {
             ptr::write(data_ptr, header);
             ptr::write_unaligned(data_ptr.add(1) as *mut T, data);
