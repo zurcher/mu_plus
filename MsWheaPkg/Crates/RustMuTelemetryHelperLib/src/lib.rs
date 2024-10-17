@@ -45,6 +45,8 @@ use uuid::uuid;
 
 static BOOT_SERVICES: StandardBootServices = StandardBootServices::new_uninit();
 
+/// Matches gMsWheaRSCDataTypeGuid in MsWheaPkg\MsWheaPkg.dec
+/// Matches MS_WHEA_RSC_DATA_TYPE in MsWheaPkg\Private\Guid\MsWheaReportDataType.h
 const MS_WHEA_RSC_DATA_TYPE_GUID: efi::Guid = guid!("91DEEA05-8C0A-4DCD-B91E-F21CA0C68405");
 
 const MS_WHEA_ERROR_STATUS_TYPE_INFO: EfiStatusCodeType = EFI_ERROR_MINOR | EFI_ERROR_CODE;
@@ -156,6 +158,7 @@ pub fn init_telemetry(efi_boot_services: &efi::BootServices) {
 #[allow(unused_imports)]
 mod test {
     use boot_services::{allocation::MemoryType, BootServices, MockBootServices};
+    use mu_pi::protocols::status_code;
     use mu_pi::protocols::status_code::{EfiStatusCodeData, EfiStatusCodeType, EfiStatusCodeValue};
     use mu_rust_helpers::guid::{guid, guid_fmt};
     use r_efi::efi;
@@ -205,8 +208,12 @@ mod test {
             ))
         });
 
+        // Test sizes of "repr(C)" structs
         assert_eq!(size_of::<MsWheaRscInternalErrorData>(), 48);
         assert_eq!(size_of::<[u8; 68]>(), DATA_SIZE);
+
+        // Test Deref trait
+        assert_eq!(*StatusCodeRuntimeProtocol, status_code::PROTOCOL_GUID);
         assert_eq!(
             Ok(()),
             log_telemetry_internal(
