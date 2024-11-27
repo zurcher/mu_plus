@@ -24,7 +24,9 @@ mu_rust_helpers = {workspace=true}
 r-efi = {workspace=true}
 rustversion = {workspace=true}
 RustAdvancedLoggerDxe = {workspace=true}
+RustMuTelemetryHelperLib = {workspace=true}
 scroll = {workspace=true}
+uuid = {workspace=true}
 
 [target.'cfg(target_os = "uefi")'.dependencies]
 RustBootServicesAllocatorDxe = {workspace=true}

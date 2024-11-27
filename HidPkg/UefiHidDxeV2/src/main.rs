@@ -20,8 +20,10 @@ mod uefi_entry {
 
     use r_efi::{efi, system};
 
+    use mu_rust_helpers::guid::guid;
     use rust_advanced_logger_dxe::{debugln, init_debug, DEBUG_ERROR};
     use rust_boot_services_allocator_dxe::GLOBAL_ALLOCATOR;
+    use rust_mu_telemetry_helper_lib::{init_telemetry, log_telemetry};
     use uefi_hid_dxe_v2::{
         boot_services::UefiBootServices,
         driver_binding::UefiDriverBinding,
@@ -31,6 +33,7 @@ mod uefi_entry {
         pointer::PointerHidHandler,
         BOOT_SERVICES, RUNTIME_SERVICES,
     };
+    use uuid::uuid;
 
     struct UefiReceivers {
         boot_services: &'static dyn UefiBootServices,
@@ -60,6 +63,7 @@ mod uefi_entry {
             RUNTIME_SERVICES.store((*system_table).runtime_services, Ordering::SeqCst);
             GLOBAL_ALLOCATOR.init((*system_table).boot_services);
             init_debug((*system_table).boot_services);
+            init_telemetry((*system_table).boot_services.as_ref().unwrap());
         }
 
         let hid_io_factory = Box::new(UefiHidIoFactory::new(&BOOT_SERVICES, image_handle));
@@ -68,6 +72,17 @@ mod uefi_entry {
 
         let hid_binding = UefiDriverBinding::new(&BOOT_SERVICES, hid_factory, image_handle);
         hid_binding.install().expect("failed to install HID driver binding");
+
+        let _ = log_telemetry(false, 0xA1A2A3A4, 0xB1B2B3B4B5B6B7B8, 0xC1C2C3C4C5C6C7C8, None, None, None);
+        let _ = log_telemetry(
+            true,
+            0xD1D2D3D4,
+            0xE1E2E3E4E5E6E7E8,
+            0xF1F2F3F4F5F6F7F8,
+            None,
+            Some(&guid!("8116C328-3DDD-4BB5-A7B0-2098E5E32979")),
+            Some(&guid!("347DFE49-9998-4BB1-A152-536FBEDAB6AD")),
+        );
 
         efi::Status::SUCCESS
     }
