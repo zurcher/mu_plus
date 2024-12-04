@@ -54,7 +54,7 @@ struct ReportFieldWithHandler<T> {
 // maps a given field to a routine that builds output reports from it.
 #[derive(Debug, Clone)]
 struct ReportFieldBuilder<T> {
-    field: T,
+    field:         T,
     field_builder: fn(&mut KeyboardHidHandler, field: T, report: &mut [u8]),
 }
 
@@ -77,7 +77,7 @@ struct KeyboardOutputReportBuilder {
 
 #[repr(C)]
 struct LayoutChangeContext {
-    boot_services: &'static dyn UefiBootServices,
+    boot_services:    &'static dyn UefiBootServices,
     keyboard_handler: *mut KeyboardHidHandler,
 }
 

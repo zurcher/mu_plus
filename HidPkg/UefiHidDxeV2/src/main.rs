@@ -34,7 +34,7 @@ mod uefi_entry {
 
     struct UefiReceivers {
         boot_services: &'static dyn UefiBootServices,
-        agent: efi::Handle,
+        agent:         efi::Handle,
     }
     impl HidReceiverFactory for UefiReceivers {
         fn new_hid_receiver_list(

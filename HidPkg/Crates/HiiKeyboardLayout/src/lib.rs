@@ -70,9 +70,9 @@ pub struct HiiKeyboardPkg {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HiiKeyboardLayout {
     /// The unique ID associated with this keyboard layout.
-    pub guid: efi::Guid,
+    pub guid:         efi::Guid,
     /// A list of key descriptors
-    pub keys: Vec<HiiKey>,
+    pub keys:         Vec<HiiKey>,
     /// A list of descriptions for this keyboard layout.
     pub descriptions: Vec<HiiKeyboardDescription>,
 }
@@ -106,7 +106,7 @@ pub struct HiiKeyDescriptor {
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct HiiNsKeyDescriptor {
     /// The descriptor for the "non-spacing key" itself.
-    pub descriptor: HiiKeyDescriptor,
+    pub descriptor:     HiiKeyDescriptor,
     /// The list of descriptors that are active if the "non-spacing" key has been pressed.
     pub dependent_keys: Vec<HiiKeyDescriptor>,
 }
@@ -148,7 +148,7 @@ impl TryFrom<u32> for EfiKey {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HiiKeyboardDescription {
     /// The language code for the description (e.g. "en-US")
-    pub language: String,
+    pub language:    String,
     /// The description (e.g. "English Keyboard")
     pub description: String,
 }
@@ -426,8 +426,8 @@ impl ctx::TryFromCtx<'_, scroll::Endian> for EfiKey {
     type Error = scroll::Error;
     fn try_from_ctx(src: &'_ [u8], _ctx: scroll::Endian) -> Result<(Self, usize), Self::Error> {
         let offset = &mut 0;
-        let efi_key =
-            EfiKey::try_from(src.gread::<u32>(offset)?).map_err(|err| scroll::Error::BadInput { size: 0, msg: err })?;
+        let efi_key = EfiKey::try_from(src.gread::<u32>(offset)?)
+            .map_err(|err| scroll::Error::BadInput { size: 0, msg: err })?;
         Ok((efi_key, *offset))
     }
 }

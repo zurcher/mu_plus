@@ -67,7 +67,7 @@ const ADVANCED_LOGGER_PROTOCOL: AdvancedLoggerProtocol = AdvancedLoggerProtocol 
 #[repr(C)]
 struct AdvancedLoggerProtocolInterface {
     signature: u32,
-    version: u32,
+    version:   u32,
     write_log: AdvancedLoggerWriteProtocol,
 }
 
@@ -123,7 +123,7 @@ impl AdvancedLogger {
 
 struct LogTransactor<'a> {
     protocol: &'a mut AdvancedLoggerProtocolInterface,
-    level: usize,
+    level:    usize,
 }
 
 impl<'a> fmt::Write for LogTransactor<'a> {

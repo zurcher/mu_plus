@@ -56,7 +56,7 @@ struct ReportFieldWithHandler<T> {
 // maps a given field to a routine that builds output reports from it.
 #[derive(Debug, Clone)]
 struct ReportFieldBuilder<T> {
-    field: T,
+    field:         T,
     field_builder: fn(&mut KeyboardHandler, field: T, report: &mut [u8]),
 }
 
@@ -82,11 +82,11 @@ struct KeyboardOutputReportBuilder {
 /// remain #[repr(C)], and Rust aliasing and concurrency rules must be manually enforced.
 #[repr(C)]
 pub struct KeyboardContext {
-    simple_text_in: protocols::simple_text_input::Protocol,
+    simple_text_in:    protocols::simple_text_input::Protocol,
     simple_text_in_ex: protocols::simple_text_input_ex::Protocol,
-    pub handler: KeyboardHandler,
-    controller: efi::Handle,
-    hid_context: *mut HidContext,
+    pub handler:       KeyboardHandler,
+    controller:        efi::Handle,
+    hid_context:       *mut HidContext,
 }
 
 /// Tracks all the input reports for this device as well as pointer state.

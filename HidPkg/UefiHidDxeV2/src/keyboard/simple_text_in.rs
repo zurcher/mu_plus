@@ -34,8 +34,8 @@ use crate::{
 /// simple_text_in protocol structure.
 #[repr(C)]
 pub struct SimpleTextInFfi {
-    simple_text_in: protocols::simple_text_input::Protocol,
-    boot_services: &'static dyn UefiBootServices,
+    simple_text_in:   protocols::simple_text_input::Protocol,
+    boot_services:    &'static dyn UefiBootServices,
     keyboard_handler: *mut KeyboardHidHandler,
 }
 

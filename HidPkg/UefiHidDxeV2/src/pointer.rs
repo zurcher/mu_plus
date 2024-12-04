@@ -55,8 +55,8 @@ struct ReportFieldWithHandler {
 // Defines a report and the fields of interest within it.
 #[derive(Debug, Default, Clone)]
 struct PointerReportData {
-    report_id: Option<ReportId>,
-    report_size: usize,
+    report_id:       Option<ReportId>,
+    report_size:     usize,
     relevant_fields: Vec<ReportFieldWithHandler>,
 }
 

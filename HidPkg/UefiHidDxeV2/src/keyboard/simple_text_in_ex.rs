@@ -34,9 +34,9 @@ use crate::{
 #[repr(C)]
 pub struct SimpleTextInExFfi {
     simple_text_in_ex: protocols::simple_text_input_ex::Protocol,
-    boot_services: &'static dyn UefiBootServices,
-    key_notify_event: efi::Event,
-    keyboard_handler: *mut KeyboardHidHandler,
+    boot_services:     &'static dyn UefiBootServices,
+    key_notify_event:  efi::Event,
+    keyboard_handler:  *mut KeyboardHidHandler,
 }
 
 impl SimpleTextInExFfi {

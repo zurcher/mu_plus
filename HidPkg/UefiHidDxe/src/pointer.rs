@@ -49,8 +49,8 @@ struct ReportFieldWithHandler {
 // Defines a report and the fields of interest within it.
 #[derive(Debug, Default, Clone)]
 struct PointerReportData {
-    report_id: Option<ReportId>,
-    report_size: usize,
+    report_id:       Option<ReportId>,
+    report_size:     usize,
     relevant_fields: Vec<ReportFieldWithHandler>,
 }
 
@@ -60,19 +60,19 @@ struct PointerReportData {
 #[repr(C)]
 pub struct PointerContext {
     absolute_pointer: absolute_pointer::Protocol,
-    pub handler: PointerHandler,
-    controller: efi::Handle,
-    hid_context: *mut HidContext,
+    pub handler:      PointerHandler,
+    controller:       efi::Handle,
+    hid_context:      *mut HidContext,
 }
 
 /// Tracks all the input reports for this device as well as pointer state.
 #[derive(Debug, Default)]
 pub struct PointerHandler {
-    input_reports: BTreeMap<Option<ReportId>, PointerReportData>,
-    supported_usages: BTreeSet<Usage>,
+    input_reports:     BTreeMap<Option<ReportId>, PointerReportData>,
+    supported_usages:  BTreeSet<Usage>,
     report_id_present: bool,
-    state_changed: bool,
-    current_state: absolute_pointer::State,
+    state_changed:     bool,
+    current_state:     absolute_pointer::State,
 }
 
 impl PointerHandler {

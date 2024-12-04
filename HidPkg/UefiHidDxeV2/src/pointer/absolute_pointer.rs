@@ -32,8 +32,8 @@ use crate::boot_services::UefiBootServices;
 #[repr(C)]
 pub struct PointerContext {
     absolute_pointer: protocols::absolute_pointer::Protocol,
-    boot_services: &'static dyn UefiBootServices,
-    pointer_handler: *mut PointerHidHandler,
+    boot_services:    &'static dyn UefiBootServices,
+    pointer_handler:  *mut PointerHidHandler,
 }
 
 impl Drop for PointerContext {

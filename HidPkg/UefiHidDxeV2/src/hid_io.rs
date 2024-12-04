@@ -59,7 +59,7 @@ pub trait HidIoFactory {
 /// Implements the HidIoFactory interface using UEFI boot services to open HidIo protocols on supported controllers.
 pub struct UefiHidIoFactory {
     boot_services: &'static dyn UefiBootServices,
-    agent: efi::Handle,
+    agent:         efi::Handle,
 }
 
 impl UefiHidIoFactory {
@@ -79,12 +79,12 @@ impl HidIoFactory for UefiHidIoFactory {
 
 /// Implements the HidIo interface on top of the HidIo protocol.
 pub struct UefiHidIo {
-    hid_io: &'static mut hid_io::protocol::Protocol,
+    hid_io:        &'static mut hid_io::protocol::Protocol,
     boot_services: &'static dyn UefiBootServices,
-    controller: efi::Handle,
-    agent: efi::Handle,
-    receiver: Option<Box<dyn HidReportReceiver>>,
-    owned: bool,
+    controller:    efi::Handle,
+    agent:         efi::Handle,
+    receiver:      Option<Box<dyn HidReportReceiver>>,
+    owned:         bool,
 }
 
 impl UefiHidIo {

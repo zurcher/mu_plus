@@ -48,7 +48,7 @@ const ALLOC_TRACKER_SIG: u32 = 0x706F6F6C; //arbitrary sig
 // Used to track allocations that need larger alignment than the UEFI Pool alignment (8 bytes).
 struct AllocationTracker {
     signature: u32,
-    orig_ptr: *mut c_void,
+    orig_ptr:  *mut c_void,
 }
 
 /// Boot services allocator implementation. Must be initialized with a boot_services pointer before use,

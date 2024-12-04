@@ -64,7 +64,11 @@ impl ReportStatusCode for StatusCodeRuntimeProtocol {
         let header_size = mem::size_of::<EfiStatusCodeData>();
         let data_size = mem::size_of::<T>();
 
-        let header = EfiStatusCodeData { header_size: header_size as u16, size: data_size as u16, r#type: data_type };
+        let header = EfiStatusCodeData {
+            header_size: header_size as u16,
+            size:        data_size as u16,
+            r#type:      data_type,
+        };
 
         let mut data_buffer = Vec::from(unsafe { any_as_u8_slice(&header) });
         data_buffer.extend(unsafe { any_as_u8_slice(&data) });

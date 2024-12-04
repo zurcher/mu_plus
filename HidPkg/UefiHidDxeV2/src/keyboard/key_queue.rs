@@ -243,7 +243,7 @@ impl KeyQueue {
         let mut key_data = protocols::simple_text_input_ex::KeyData {
             key: InputKey {
                 unicode_char: current_descriptor.unicode,
-                scan_code: modifier_to_scan(current_descriptor.modifier),
+                scan_code:    modifier_to_scan(current_descriptor.modifier),
             },
             ..Default::default()
         };

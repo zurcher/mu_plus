@@ -65,9 +65,9 @@ pub trait DriverBinding {
 ///```
 #[repr(C)]
 pub struct UefiDriverBinding {
-    uefi_binding: protocols::driver_binding::Protocol,
+    uefi_binding:  protocols::driver_binding::Protocol,
     boot_services: &'static dyn UefiBootServices,
-    binding: Box<dyn DriverBinding>,
+    binding:       Box<dyn DriverBinding>,
 }
 
 impl UefiDriverBinding {

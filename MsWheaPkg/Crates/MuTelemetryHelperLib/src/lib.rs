@@ -75,7 +75,7 @@ const MS_WHEA_ERROR_STATUS_TYPE_FATAL: EfiStatusCodeType = EFI_ERROR_MAJOR | EFI
 
 #[repr(C)]
 struct MsWheaRscInternalErrorData {
-    library_id: efi::Guid,
+    library_id:       efi::Guid,
     ihv_sharing_guid: efi::Guid,
     additional_info1: u64,
     additional_info2: u64,
@@ -133,7 +133,7 @@ fn log_telemetry_internal<B: BootServices>(
         if is_fatal { MS_WHEA_ERROR_STATUS_TYPE_FATAL } else { MS_WHEA_ERROR_STATUS_TYPE_INFO };
 
     let error_data = MsWheaRscInternalErrorData {
-        library_id: *library_id.unwrap_or(&guid::ZERO),
+        library_id:       *library_id.unwrap_or(&guid::ZERO),
         ihv_sharing_guid: *ihv_id.unwrap_or(&guid::ZERO),
         additional_info1: extra_data1,
         additional_info2: extra_data2,
