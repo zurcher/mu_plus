@@ -36,10 +36,20 @@ use core::{ptr, sync::atomic::AtomicPtr};
 
 use r_efi::efi;
 
-use boot_services::StandardBootServices;
+use boot_services::{BootServices, StandardBootServices};
 
 /// Global instance of UEFI Boot Services.
 pub static BOOT_SERVICES: StandardBootServices = StandardBootServices::new_uninit();
+
+#[cfg(not(test))]
+pub fn static_boot_services() -> &'static impl BootServices {
+    &BOOT_SERVICES
+}
+
+#[cfg(test)]
+pub fn static_boot_services() -> &'static impl BootServices {
+    unsafe { test::MOCK_BOOT_SERVICES.assume_init_ref() }
+}
 
 /// Global instance of UEFI Runtime Services.
 pub static RUNTIME_SERVICES: AtomicPtr<efi::RuntimeServices> = AtomicPtr::new(ptr::null_mut());

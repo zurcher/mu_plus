@@ -52,7 +52,7 @@ mod uefi_entry {
         system_table: *const system::SystemTable,
     ) -> efi::Status {
         // Safety: This block is unsafe because it assumes that system_table and (*system_table).boot_services are correct,
-        // and because it mutates/accesses the global BOOT_SERVICES static.
+        // and because it mutates/accesses the global static_boot_services() static.
         unsafe {
             BOOT_SERVICES.initialize((*system_table).boot_services.as_ref().unwrap());
             RUNTIME_SERVICES.store((*system_table).runtime_services, Ordering::SeqCst);

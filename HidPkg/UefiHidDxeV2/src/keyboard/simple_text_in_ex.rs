@@ -18,7 +18,7 @@ use boot_services::{event::EventType, protocol_handler, tpl::Tpl, BootServices};
 use crate::{
     hid_io::{HidIoFactory, UefiHidIoFactory},
     keyboard::KeyboardHidHandler,
-    BOOT_SERVICES,
+    static_boot_services,
 };
 
 /// FFI context
@@ -27,7 +27,7 @@ use crate::{
 /// implementations. Care must be taken to ensure that rust invariants are respected when accessing the
 /// KeyboardHidHandler. In particular, the design must ensure mutual exclusion on the KeyboardHidHandler between
 /// callbacks running at different TPL; this is accomplished by ensuring all access to the structure is at TPL_NOTIFY
-/// once initialization is complete - for this reason the context structure includes a direct reference to BOOT_SERVICES
+/// once initialization is complete - for this reason the context structure includes a direct reference to static_boot_services()
 /// so that TPL can be enforced without access to the *mut KeyboardHidHandler.
 ///
 /// In addition, the simple_text_in_ex protocol element needs to be the first element in the structure so that the full
@@ -61,7 +61,7 @@ impl SimpleTextInExFfi {
 
         //create event for wait_for_key
         let wait_for_key_event = unsafe {
-            BOOT_SERVICES.create_event_unchecked(
+            static_boot_services().create_event_unchecked(
                 EventType::NOTIFY_WAIT,
                 Tpl::NOTIFY,
                 Some(Self::simple_text_in_ex_wait_for_key),
@@ -77,10 +77,10 @@ impl SimpleTextInExFfi {
         unsafe { (*simple_text_in_ex_ptr).simple_text_in_ex.wait_for_key_ex = wait_for_key_event };
 
         //Key notifies are required to dispatch at TPL_CALLBACK per UEFI spec 2.10 section 12.2.5. The keyboard handler
-        //interfaces run at TPL_NOTIFY and issue a BOOT_SERVICES.signal_event() on this event to pend key notifies to be
+        //interfaces run at TPL_NOTIFY and issue a static_boot_services().signal_event() on this event to pend key notifies to be
         //serviced at TPL_CALLBACK.
         let key_notify_event = unsafe {
-            BOOT_SERVICES.create_event_unchecked(
+            static_boot_services().create_event_unchecked(
                 EventType::NOTIFY_SIGNAL,
                 Tpl::CALLBACK,
                 Some(Self::process_key_notifies),
@@ -88,7 +88,7 @@ impl SimpleTextInExFfi {
             )
         };
         if key_notify_event.is_err() {
-            let _ = BOOT_SERVICES.close_event(wait_for_key_event);
+            let _ = static_boot_services().close_event(wait_for_key_event);
             drop(unsafe { Box::from_raw(simple_text_in_ex_ptr) });
             key_notify_event?;
         }
@@ -97,7 +97,7 @@ impl SimpleTextInExFfi {
 
         //install the simple_text_in_ex protocol
         let status = unsafe {
-            BOOT_SERVICES.install_protocol_interface_unchecked(
+            static_boot_services().install_protocol_interface_unchecked(
                 Some(controller),
                 &protocol_handler::SimpleTextInputEx,
                 simple_text_in_ex_ptr as *mut c_void,
@@ -105,8 +105,8 @@ impl SimpleTextInExFfi {
         };
 
         if status.is_err() {
-            let _ = BOOT_SERVICES.close_event(wait_for_key_event);
-            let _ = BOOT_SERVICES.close_event(key_notify_event);
+            let _ = static_boot_services().close_event(wait_for_key_event);
+            let _ = static_boot_services().close_event(key_notify_event);
             drop(unsafe { Box::from_raw(simple_text_in_ex_ptr) });
             status?;
         }
@@ -119,7 +119,7 @@ impl SimpleTextInExFfi {
         //Controller is set - that means initialize() was called, and there is potential state exposed thru FFI that needs
         //to be cleaned up.
         let status = unsafe {
-            BOOT_SERVICES.open_protocol_unchecked(
+            static_boot_services().open_protocol_unchecked(
                 controller,
                 &protocol_handler::SimpleTextInputEx,
                 agent,
@@ -136,7 +136,7 @@ impl SimpleTextInExFfi {
         //Attempt to uninstall the simple_text_in interface - this should disconnect any drivers using it and release
         //the interface.
         let status = unsafe {
-            BOOT_SERVICES.uninstall_protocol_interface_unchecked(
+            static_boot_services().uninstall_protocol_interface_unchecked(
                 controller,
                 &protocol_handler::SimpleTextInputEx,
                 simple_text_in_ex_ptr as *mut c_void,
@@ -158,7 +158,7 @@ impl SimpleTextInExFfi {
         }
 
         let wait_for_key_event: efi::Handle = unsafe { (*simple_text_in_ex_ptr).simple_text_in_ex.wait_for_key_ex };
-        let status = BOOT_SERVICES.close_event(wait_for_key_event);
+        let status = static_boot_services().close_event(wait_for_key_event);
         if status.is_err() {
             //An error here means the event was not closed, so in theory the notification_callback on it could still be
             //fired.
@@ -173,7 +173,7 @@ impl SimpleTextInExFfi {
         }
 
         let key_notify_event: efi::Handle = unsafe { (*simple_text_in_ex_ptr).key_notify_event };
-        let status = BOOT_SERVICES.close_event(key_notify_event);
+        let status = static_boot_services().close_event(key_notify_event);
         if status.is_err() {
             //An error here means the event was not closed, so in theory the notification_callback on it could still be
             //fired.
@@ -201,7 +201,7 @@ impl SimpleTextInExFfi {
             return efi::Status::INVALID_PARAMETER;
         }
         let context = unsafe { (this as *mut SimpleTextInExFfi).as_mut() }.expect("bad pointer");
-        let old_tpl = BOOT_SERVICES.raise_tpl(Tpl::NOTIFY);
+        let old_tpl = static_boot_services().raise_tpl(Tpl::NOTIFY);
         let status = 'reset_processing: {
             let Some(keyboard_handler) = (unsafe { context.keyboard_handler.as_mut() }) else {
                 break 'reset_processing efi::Status::DEVICE_ERROR;
@@ -215,7 +215,7 @@ impl SimpleTextInExFfi {
                 .err()
                 .unwrap_or(efi::Status::SUCCESS)
         };
-        BOOT_SERVICES.restore_tpl(old_tpl);
+        static_boot_services().restore_tpl(old_tpl);
         status
     }
 
@@ -228,7 +228,7 @@ impl SimpleTextInExFfi {
             return efi::Status::INVALID_PARAMETER;
         }
         let context = unsafe { (this as *mut SimpleTextInExFfi).as_mut() }.expect("bad pointer");
-        let old_tpl = BOOT_SERVICES.raise_tpl(Tpl::NOTIFY);
+        let old_tpl = static_boot_services().raise_tpl(Tpl::NOTIFY);
         let status = 'read_key_stroke: {
             let keyboard_handler = unsafe { context.keyboard_handler.as_mut() };
             let Some(keyboard_handler) = keyboard_handler else {
@@ -246,7 +246,7 @@ impl SimpleTextInExFfi {
                 efi::Status::NOT_READY
             }
         };
-        BOOT_SERVICES.restore_tpl(old_tpl);
+        static_boot_services().restore_tpl(old_tpl);
         status
     }
 
@@ -259,7 +259,7 @@ impl SimpleTextInExFfi {
             return efi::Status::INVALID_PARAMETER;
         }
         let context = unsafe { (this as *mut SimpleTextInExFfi).as_mut() }.expect("bad pointer");
-        let old_tpl = BOOT_SERVICES.raise_tpl(Tpl::NOTIFY);
+        let old_tpl = static_boot_services().raise_tpl(Tpl::NOTIFY);
         let status = 'set_state_processing: {
             let Some(keyboard_handler) = (unsafe { context.keyboard_handler.as_mut() }) else {
                 break 'set_state_processing efi::Status::DEVICE_ERROR;
@@ -273,7 +273,7 @@ impl SimpleTextInExFfi {
             keyboard_handler.set_key_toggle_state(unsafe { key_toggle_state.read() });
             keyboard_handler.update_leds(hid_io.as_ref()).err().unwrap_or(efi::Status::SUCCESS)
         };
-        BOOT_SERVICES.restore_tpl(old_tpl);
+        static_boot_services().restore_tpl(old_tpl);
         status
     }
 
@@ -293,7 +293,7 @@ impl SimpleTextInExFfi {
         }
 
         let context = unsafe { (this as *mut SimpleTextInExFfi).as_mut() }.expect("bad pointer");
-        let old_tpl = BOOT_SERVICES.raise_tpl(Tpl::NOTIFY);
+        let old_tpl = static_boot_services().raise_tpl(Tpl::NOTIFY);
         let status = {
             if let Some(keyboard_handler) = unsafe { context.keyboard_handler.as_mut() } {
                 let key_data = unsafe { key_data_ptr.read() };
@@ -304,7 +304,7 @@ impl SimpleTextInExFfi {
                 efi::Status::DEVICE_ERROR
             }
         };
-        BOOT_SERVICES.restore_tpl(old_tpl);
+        static_boot_services().restore_tpl(old_tpl);
         status
     }
 
@@ -317,7 +317,7 @@ impl SimpleTextInExFfi {
             return efi::Status::INVALID_PARAMETER;
         }
         let context = unsafe { (this as *mut SimpleTextInExFfi).as_mut() }.expect("bad pointer");
-        let old_tpl = BOOT_SERVICES.raise_tpl(Tpl::NOTIFY);
+        let old_tpl = static_boot_services().raise_tpl(Tpl::NOTIFY);
         let status = if let Some(keyboard_handler) = unsafe { context.keyboard_handler.as_mut() } {
             keyboard_handler
                 .remove_key_notify_callback(notification_handle as usize)
@@ -326,7 +326,7 @@ impl SimpleTextInExFfi {
         } else {
             efi::Status::DEVICE_ERROR
         };
-        BOOT_SERVICES.restore_tpl(old_tpl);
+        static_boot_services().restore_tpl(old_tpl);
         status
     }
 
@@ -338,7 +338,7 @@ impl SimpleTextInExFfi {
         }
         let context = unsafe { (context as *mut SimpleTextInExFfi).as_mut() }.expect("bad pointer");
 
-        let old_tpl = BOOT_SERVICES.raise_tpl(Tpl::NOTIFY);
+        let old_tpl = static_boot_services().raise_tpl(Tpl::NOTIFY);
         if let Some(keyboard_handler) = unsafe { context.keyboard_handler.as_mut() } {
             while let Some(key_data) = keyboard_handler.peek_key() {
                 if key_data.key.unicode_char == 0 && key_data.key.scan_code == 0 {
@@ -347,12 +347,12 @@ impl SimpleTextInExFfi {
                     continue;
                 } else {
                     // valid keystroke
-                    let _ = BOOT_SERVICES.signal_event(event);
+                    let _ = static_boot_services().signal_event(event);
                     break;
                 }
             }
         }
-        BOOT_SERVICES.restore_tpl(old_tpl);
+        static_boot_services().restore_tpl(old_tpl);
     }
 
     // Event callback function for handling registered key notifications. Iterates over the queue of keys to be notified,
@@ -365,13 +365,13 @@ impl SimpleTextInExFfi {
             let mut pending_key = None;
             let mut pending_callbacks = Vec::new();
 
-            let old_tpl = BOOT_SERVICES.raise_tpl(Tpl::NOTIFY);
+            let old_tpl = static_boot_services().raise_tpl(Tpl::NOTIFY);
             if let Some(keyboard_handler) = unsafe { context.keyboard_handler.as_mut() } {
                 (pending_key, pending_callbacks) = keyboard_handler.pending_callbacks();
             } else {
                 debugln!(DEBUG_ERROR, "process_key_notifies event called without a valid keyboard_handler");
             }
-            BOOT_SERVICES.restore_tpl(old_tpl);
+            static_boot_services().restore_tpl(old_tpl);
 
             //dispatch notifies (if any) at the TPL this event callback was invoked at.
             if let Some(mut pending_key) = pending_key {

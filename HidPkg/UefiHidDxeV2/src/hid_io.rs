@@ -21,7 +21,7 @@ use hid_io::{interface::HidIoProtocol, protocol::HidReportType};
 use hidparser::ReportDescriptor;
 use rust_advanced_logger_dxe::{debugln, DEBUG_ERROR};
 
-use crate::BOOT_SERVICES;
+use crate::static_boot_services;
 use boot_services::BootServices;
 
 /// Defines an interface to be implemented by logic that wants to receive hid reports.
@@ -98,7 +98,7 @@ impl UefiHidIo {
             }
         };
 
-        let hid_io = unsafe { BOOT_SERVICES.open_protocol(controller, &HidIoProtocol, agent, controller, attributes) }?;
+        let hid_io = unsafe { static_boot_services().open_protocol(controller, &HidIoProtocol, agent, controller, attributes) }?;
 
         Ok(Self { hid_io, controller, agent, receiver: None, owned })
     }
@@ -119,7 +119,7 @@ impl Drop for UefiHidIo {
     fn drop(&mut self) {
         if self.owned {
             let _ = self.take_report_receiver();
-            let status = BOOT_SERVICES.close_protocol(self.controller, &HidIoProtocol, self.agent, self.controller);
+            let status = static_boot_services().close_protocol(self.controller, &HidIoProtocol, self.agent, self.controller);
             if status.is_err() {
                 debugln!(DEBUG_ERROR, "Unexpected error closing hid_io: {:x?}", status);
             }

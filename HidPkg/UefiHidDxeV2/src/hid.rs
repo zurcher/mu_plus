@@ -53,7 +53,7 @@ use mu_rust_helpers::guid::guid;
 use crate::{
     driver_binding::DriverBinding,
     hid_io::{HidIo, HidIoFactory, HidReportReceiver},
-    BOOT_SERVICES,
+    static_boot_services,
 };
 pub struct HidInstanceProtocol;
 
@@ -194,7 +194,7 @@ impl DriverBinding for HidFactory {
         // Hold raw reference in case install fails
         let hid_instance_raw = hid_instance as *mut HidInstance;
 
-        let status = BOOT_SERVICES.install_protocol_interface(Some(controller), &HidInstanceProtocol, hid_instance);
+        let status = static_boot_services().install_protocol_interface(Some(controller), &HidInstanceProtocol, hid_instance);
         if status.is_err() {
             drop(unsafe { Box::from_raw(hid_instance_raw) });
             status?;
@@ -208,7 +208,7 @@ impl DriverBinding for HidFactory {
     /// created by [`Self::driver_binding_start`] is reclaimed and dropped.
     fn driver_binding_stop(&mut self, controller: r_efi::efi::Handle) -> Result<(), efi::Status> {
         unsafe {
-            let hid_instance = BOOT_SERVICES.open_protocol_unchecked(
+            let hid_instance = static_boot_services().open_protocol_unchecked(
                 controller,
                 &HidInstanceProtocol,
                 self.agent,
@@ -216,7 +216,7 @@ impl DriverBinding for HidFactory {
                 efi::OPEN_PROTOCOL_GET_PROTOCOL,
             )?;
             // SAFETY: `hid_instance` is expected to be valid if handle_protocol didn't return Err
-            BOOT_SERVICES.uninstall_protocol_interface_unchecked(controller, &HidInstanceProtocol, hid_instance)?;
+            static_boot_services().uninstall_protocol_interface_unchecked(controller, &HidInstanceProtocol, hid_instance)?;
             drop(Box::from_raw(hid_instance));
         }
         Ok(())

@@ -13,7 +13,7 @@ use alloc::boxed::Box;
 use mockall::automock;
 use r_efi::{efi, protocols};
 
-use crate::BOOT_SERVICES;
+use crate::static_boot_services;
 use boot_services::{protocol_handler, BootServices};
 
 /// Abstracts the UEFI driver binding interface.
@@ -77,7 +77,7 @@ impl UefiDriverBinding {
         // Hold raw reference in case install fails
         let uefi_driver_binding_raw = uefi_driver_binding as *mut UefiDriverBinding;
 
-        let status = BOOT_SERVICES.install_protocol_interface(
+        let status = static_boot_services().install_protocol_interface(
             Some(handle),
             &protocol_handler::DriverBinding,
             &mut uefi_driver_binding.uefi_binding,
@@ -92,9 +92,9 @@ impl UefiDriverBinding {
     /// Uninstalls the binding from the UEFI core.
     pub fn uninstall(handle: efi::Handle) -> Result<(), efi::Status> {
         unsafe {
-            let interface = BOOT_SERVICES.handle_protocol_unchecked(handle, &protocol_handler::DriverBinding)?;
+            let interface = static_boot_services().handle_protocol_unchecked(handle, &protocol_handler::DriverBinding)?;
             // SAFETY: `interface` is expected to be valid if handle_protocol didn't return Err
-            BOOT_SERVICES.uninstall_protocol_interface_unchecked(handle, &protocol_handler::DriverBinding, interface)?;
+            static_boot_services().uninstall_protocol_interface_unchecked(handle, &protocol_handler::DriverBinding, interface)?;
             drop(Box::from_raw(interface as *mut UefiDriverBinding));
         }
         Ok(())

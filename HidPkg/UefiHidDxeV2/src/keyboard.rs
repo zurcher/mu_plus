@@ -34,7 +34,7 @@ use boot_services::{event::EventType, protocol_handler, tpl::Tpl, BootServices};
 use crate::{
     hid_io::{HidIo, HidReportReceiver},
     keyboard::key_queue::OrdKeyData,
-    BOOT_SERVICES,
+    static_boot_services,
 };
 
 // usages supported by this module
@@ -287,7 +287,7 @@ impl KeyboardHidHandler {
         let context_ptr: *mut LayoutChangeContext = Box::into_raw(Box::new(context));
 
         let event = unsafe {
-            BOOT_SERVICES.create_event_ex_unchecked(
+            static_boot_services().create_event_ex_unchecked(
                 EventType::NOTIFY_SIGNAL,
                 Tpl::NOTIFY,
                 on_layout_update,
@@ -306,7 +306,7 @@ impl KeyboardHidHandler {
     fn uninstall_layout_change_event(&mut self) -> Result<(), efi::Status> {
         if !self.layout_change_event.is_null() {
             let layout_change_event: efi::Handle = self.layout_change_event;
-            let status = BOOT_SERVICES.close_event(layout_change_event);
+            let status = static_boot_services().close_event(layout_change_event);
             if status.is_err() {
                 //An error here means the event was not closed, so in theory the notification_callback on it could still be fired.
                 //Mark the instance invalid by setting the keyboard_handler raw pointer to null, but leak the LayoutContext
@@ -327,7 +327,7 @@ impl KeyboardHidHandler {
 
     // Installs a default keyboard layout.
     fn install_default_layout(&mut self) -> Result<(), efi::Status> {
-        let status = unsafe { BOOT_SERVICES.locate_protocol(&protocol_handler::HiiDatabase, None) };
+        let status = unsafe { static_boot_services().locate_protocol(&protocol_handler::HiiDatabase, None) };
         if status.is_err() {
             let status_code = status.err().unwrap();
             debugln!(
@@ -521,7 +521,7 @@ impl HidReportReceiver for KeyboardHidHandler {
     }
 
     fn receive_report(&mut self, report: &[u8], hid_io: &dyn HidIo) {
-        let old_tpl = BOOT_SERVICES.raise_tpl(Tpl::NOTIFY);
+        let old_tpl = static_boot_services().raise_tpl(Tpl::NOTIFY);
 
         let mut output_reports = Vec::new();
         'report_processing: {
@@ -596,7 +596,7 @@ impl HidReportReceiver for KeyboardHidHandler {
                     //after processing all the key strokes, check if any keys were pressed that should trigger the notifier callback
                     //and if so, signal the event to trigger notify processing at the appropriate TPL.
                     if self.key_queue.peek_notify_key().is_some() {
-                        let _ = BOOT_SERVICES.signal_event(self.key_notify_event);
+                        let _ = static_boot_services().signal_event(self.key_notify_event);
                     }
 
                     //after processing all the key strokes, send updated LED state if required.
@@ -607,7 +607,7 @@ impl HidReportReceiver for KeyboardHidHandler {
             }
         }
 
-        BOOT_SERVICES.restore_tpl(old_tpl);
+        static_boot_services().restore_tpl(old_tpl);
 
         // if any output reports, send them after releasing handler.
         for (id, output_report) in output_reports {
@@ -638,7 +638,7 @@ impl Drop for KeyboardHidHandler {
 // handles keyboard layout change event that occurs when a new keyboard layout is set.
 extern "efiapi" fn on_layout_update(_event: efi::Event, context: *mut c_void) {
     let context = unsafe { (context as *mut LayoutChangeContext).as_mut() }.expect("bad context pointer");
-    let old_tpl = BOOT_SERVICES.raise_tpl(Tpl::NOTIFY);
+    let old_tpl = static_boot_services().raise_tpl(Tpl::NOTIFY);
 
     'layout_processing: {
         if context.keyboard_handler.is_null() {
@@ -648,7 +648,7 @@ extern "efiapi" fn on_layout_update(_event: efi::Event, context: *mut c_void) {
 
         let keyboard_handler = unsafe { context.keyboard_handler.as_mut() }.expect("bad keyboard handler");
 
-        let status = unsafe { BOOT_SERVICES.locate_protocol(&protocol_handler::HiiDatabase, None) };
+        let status = unsafe { static_boot_services().locate_protocol(&protocol_handler::HiiDatabase, None) };
 
         if status.is_err() {
             //nothing to do if there is no hii protocol.
@@ -704,7 +704,7 @@ extern "efiapi" fn on_layout_update(_event: efi::Event, context: *mut c_void) {
         }
     }
 
-    BOOT_SERVICES.restore_tpl(old_tpl);
+    static_boot_services().restore_tpl(old_tpl);
 }
 
 #[cfg(test)]

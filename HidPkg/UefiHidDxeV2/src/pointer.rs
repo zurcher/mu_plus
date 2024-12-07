@@ -27,7 +27,7 @@ use rust_advanced_logger_dxe::{debugln, function, DEBUG_ERROR, DEBUG_VERBOSE};
 use self::absolute_pointer::PointerContext;
 use boot_services::{BootServices, tpl::Tpl};
 
-use crate::{BOOT_SERVICES, hid_io::{HidIo, HidReportReceiver}};
+use crate::{static_boot_services, hid_io::{HidIo, HidReportReceiver}};
 
 // Usages supported by this module.
 const GENERIC_DESKTOP_X: u32 = 0x00010030;
@@ -250,7 +250,7 @@ impl HidReportReceiver for PointerHidHandler {
         Ok(())
     }
     fn receive_report(&mut self, report: &[u8], _hid_io: &dyn HidIo) {
-        let old_tpl = BOOT_SERVICES.raise_tpl(Tpl::NOTIFY);
+        let old_tpl = static_boot_services().raise_tpl(Tpl::NOTIFY);
 
         'report_processing: {
             if report.is_empty() {
@@ -290,7 +290,7 @@ impl HidReportReceiver for PointerHidHandler {
             }
         }
 
-        BOOT_SERVICES.restore_tpl(old_tpl);
+        static_boot_services().restore_tpl(old_tpl);
     }
 }
 
