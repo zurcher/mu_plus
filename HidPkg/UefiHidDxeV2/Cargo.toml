@@ -24,10 +24,13 @@ r-efi = {workspace=true}
 rustversion = {workspace=true}
 RustAdvancedLoggerDxe = {workspace=true}
 scroll = {workspace=true}
+boot_services = { workspace = true }
+mu_rust_helpers = { workspace = true }
 
 [target.'cfg(target_os = "uefi")'.dependencies]
 RustBootServicesAllocatorDxe = {workspace=true}
 
 [dev-dependencies]
 mockall = "0.13.0"
+boot_services = { workspace = true, features = ["mockall"] }
 RustAdvancedLoggerDxe = {workspace=true, features=["std"]}
