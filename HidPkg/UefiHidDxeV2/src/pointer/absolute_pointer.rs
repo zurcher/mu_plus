@@ -329,13 +329,11 @@ mod test {
     // object, and the mock object itself expects to be "mut", which makes it hard to handle as a single global static.
     // Instead, raw pointers are used to simulate a MockUefiBootServices instance with 'static lifetime.
     // This object needs to outlive anything that uses it - once created, it will live until the end of the program.
-    fn create_fake_static_boot_service() -> &'static mut MockUefiBootServices {
-        unsafe { Box::into_raw(Box::new(MockUefiBootServices::new())).as_mut().unwrap() }
-    }
+    pub static mut MOCK_BOOT_SERVICES: MaybeUninit<MockBootServices> = MaybeUninit::uninit();
 
     #[test]
     fn wait_for_event_should_wait_for_event() {
-        let boot_services = create_fake_static_boot_service();
+        let boot_services = MockBootServices::new();
         const AGENT_HANDLE: efi::Handle = 0x01 as efi::Handle;
         const CONTROLLER_HANDLE: efi::Handle = 0x02 as efi::Handle;
         const POINTER_EVENT: efi::Event = 0x03 as efi::Event;
@@ -386,7 +384,7 @@ mod test {
         });
 
         let agent = AGENT_HANDLE;
-        let mut pointer_handler = PointerHidHandler::new(boot_services, agent);
+        let mut pointer_handler = PointerHidHandler::new(agent);
         let mut hid_io = MockHidIo::new();
         hid_io
             .expect_get_report_descriptor()
@@ -414,7 +412,7 @@ mod test {
 
     #[test]
     fn absolute_pointer_reset_should_reset_pointer_state() {
-        let boot_services = create_fake_static_boot_service();
+        let boot_services = MockBootServices::new();
         const AGENT_HANDLE: efi::Handle = 0x01 as efi::Handle;
         const CONTROLLER_HANDLE: efi::Handle = 0x02 as efi::Handle;
         const EVENT_HANDLE: efi::Handle = 0x03 as efi::Handle;
@@ -458,7 +456,7 @@ mod test {
         });
 
         let agent = AGENT_HANDLE;
-        let mut pointer_handler = PointerHidHandler::new(boot_services, agent);
+        let mut pointer_handler = PointerHidHandler::new(agent);
         let mut hid_io = MockHidIo::new();
         hid_io
             .expect_get_report_descriptor()
@@ -499,7 +497,7 @@ mod test {
 
     #[test]
     fn absolute_pointer_get_state_should_return_current_state_and_clear_changed_flag() {
-        let boot_services = create_fake_static_boot_service();
+        let boot_services = MockBootServices::new();
         const AGENT_HANDLE: efi::Handle = 0x01 as efi::Handle;
         const CONTROLLER_HANDLE: efi::Handle = 0x02 as efi::Handle;
         const EVENT_HANDLE: efi::Handle = 0x03 as efi::Handle;
@@ -543,7 +541,7 @@ mod test {
         });
 
         let agent = AGENT_HANDLE;
-        let mut pointer_handler = PointerHidHandler::new(boot_services, agent);
+        let mut pointer_handler = PointerHidHandler::new(agent);
         let mut hid_io = MockHidIo::new();
         hid_io
             .expect_get_report_descriptor()

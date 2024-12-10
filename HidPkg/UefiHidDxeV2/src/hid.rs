@@ -242,13 +242,11 @@ mod test {
     // object, and the mock object itself expects to be "mut", which makes it hard to handle as a single global static.
     // Instead, raw pointers are used to simulate a MockUefiBootServices instance with 'static lifetime.
     // This object needs to outlive anything that uses it - once created, it will live until the end of the program.
-    fn create_fake_static_boot_service() -> &'static mut MockUefiBootServices {
-        unsafe { Box::into_raw(Box::new(MockUefiBootServices::new())).as_mut().unwrap() }
-    }
+    pub static mut MOCK_BOOT_SERVICES: MaybeUninit<MockBootServices> = MaybeUninit::uninit();
 
     #[test]
     fn driver_binding_supported_should_indicate_support() {
-        let boot_services = create_fake_static_boot_service();
+        let boot_services = MockBootServices::new();
 
         let mut hid_io_factory = Box::new(MockHidIoFactory::new());
         //handle 0x3 should return success.
@@ -264,15 +262,15 @@ mod test {
         let mut hid_factory = HidFactory::new(hid_io_factory, receiver_factory, agent);
 
         let controller = 0x2 as efi::Handle;
-        assert_eq!(hid_factory.driver_binding_supported(boot_services, controller), Err(efi::Status::UNSUPPORTED));
+        assert_eq!(hid_factory.driver_binding_supported(controller), Err(efi::Status::UNSUPPORTED));
 
         let controller = 0x3 as efi::Handle;
-        assert!(hid_factory.driver_binding_supported(boot_services, controller).is_ok());
+        assert!(hid_factory.driver_binding_supported(controller).is_ok());
     }
 
     #[test]
     fn driver_binding_start_should_not_start_when_not_supported() {
-        let boot_services = create_fake_static_boot_service();
+        let boot_services = MockBootServices::new();
         let mut hid_io_factory = Box::new(MockHidIoFactory::new());
         hid_io_factory
             .expect_new_hid_io()
@@ -297,17 +295,17 @@ mod test {
 
         // test: no hid_io on the handle.
         let controller = 0x02 as efi::Handle;
-        assert_eq!(hid_factory.driver_binding_start(boot_services, controller), Err(efi::Status::UNSUPPORTED));
+        assert_eq!(hid_factory.driver_binding_start(controller), Err(efi::Status::UNSUPPORTED));
 
         // test: hid_io present, but failed to retrieve receivers.
         let controller = 0x03 as efi::Handle;
-        assert_eq!(hid_factory.driver_binding_start(boot_services, controller), Err(efi::Status::UNSUPPORTED));
+        assert_eq!(hid_factory.driver_binding_start(controller), Err(efi::Status::UNSUPPORTED));
 
         // test: hid_io present, empty receiver list.
         let controller = 0x04 as efi::Handle;
-        assert_eq!(hid_factory.driver_binding_start(boot_services, controller), Err(efi::Status::UNSUPPORTED));
+        assert_eq!(hid_factory.driver_binding_start(controller), Err(efi::Status::UNSUPPORTED));
 
-        let boot_services = create_fake_static_boot_service();
+        let boot_services = MockBootServices::new();
 
         //test: hid_io present, receiver present, receiver init indicates no support.
         let mut hid_io_factory = Box::new(MockHidIoFactory::new());
@@ -327,7 +325,7 @@ mod test {
 
     #[test]
     fn driver_binding_start_should_start_when_supported() {
-        let boot_services = create_fake_static_boot_service();
+        let boot_services = MockBootServices::new();
         let agent = 0x1 as efi::Handle;
 
         let mut hid_io_factory = Box::new(MockHidIoFactory::new());
@@ -355,7 +353,7 @@ mod test {
 
     #[test]
     fn driver_binding_start_should_stop_after_start() {
-        let boot_services = create_fake_static_boot_service();
+        let boot_services = MockBootServices::new();
         let agent = 0x1 as efi::Handle;
 
         let mut hid_io_factory = Box::new(MockHidIoFactory::new());
@@ -387,11 +385,11 @@ mod test {
 
         let mut hid_factory = HidFactory::new(hid_io_factory, receiver_factory, agent);
         let controller = 0x02 as efi::Handle;
-        hid_factory.driver_binding_start(boot_services, controller).unwrap();
+        hid_factory.driver_binding_start(controller).unwrap();
 
         assert_ne!(unsafe { HID_INSTANCE_PTR }, core::ptr::null_mut());
 
-        hid_factory.driver_binding_stop(boot_services, controller).unwrap();
+        hid_factory.driver_binding_stop(controller).unwrap();
     }
 
     #[test]

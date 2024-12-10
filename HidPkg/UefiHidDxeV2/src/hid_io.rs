@@ -234,9 +234,7 @@ mod test {
     // object, and the mock object itself expects to be "mut", which makes it hard to handle as a single global static.
     // Instead, raw pointers are used to simulate a MockUefiBootServices instance with 'static lifetime.
     // This object needs to outlive anything that uses it - once created, it will live until the end of the program.
-    fn create_fake_static_boot_service() -> &'static mut MockUefiBootServices {
-        unsafe { Box::into_raw(Box::new(MockUefiBootServices::new())).as_mut().unwrap() }
-    }
+    pub static mut MOCK_BOOT_SERVICES: MaybeUninit<MockBootServices> = MaybeUninit::uninit();
 
     // Mock the HidIo FFI interface.
     fn mock_hid_io() -> hid_io::protocol::Protocol {
@@ -330,7 +328,7 @@ mod test {
 
     #[test]
     fn new_should_instantiate_new_uefi_hid_io() {
-        let boot_services = create_fake_static_boot_service();
+        let boot_services = MockBootServices::new();
         let controller: efi::Handle = 0x1234 as efi::Handle;
         let agent: efi::Handle = 0x4321 as efi::Handle;
 
@@ -356,13 +354,13 @@ mod test {
             efi::Status::SUCCESS
         });
 
-        let uefi_hid_io = UefiHidIo::new(boot_services, agent, controller, true).unwrap();
+        let uefi_hid_io = UefiHidIo::new(agent, controller, true).unwrap();
         drop(uefi_hid_io);
     }
 
     #[test]
     fn get_report_descriptor_should_return_report_descriptor() {
-        let boot_services = create_fake_static_boot_service();
+        let boot_services = MockBootServices::new();
         let controller: efi::Handle = 0x1234 as efi::Handle;
         let agent: efi::Handle = 0x4321 as efi::Handle;
 
@@ -375,14 +373,14 @@ mod test {
 
         boot_services.expect_close_protocol().returning(|_, _, _, _| efi::Status::SUCCESS);
 
-        let uefi_hid_io = UefiHidIo::new(boot_services, agent, controller, true).unwrap();
+        let uefi_hid_io = UefiHidIo::new(agent, controller, true).unwrap();
         let descriptor = uefi_hid_io.get_report_descriptor().unwrap();
         assert_eq!(descriptor, hidparser::parse_report_descriptor(&MINIMAL_BOOT_KEYBOARD_REPORT_DESCRIPTOR).unwrap());
         drop(uefi_hid_io);
     }
     #[test]
     fn set_report_should_set_report() {
-        let boot_services = create_fake_static_boot_service();
+        let boot_services = MockBootServices::new();
         let controller: efi::Handle = 0x1234 as efi::Handle;
         let agent: efi::Handle = 0x4321 as efi::Handle;
 
@@ -394,7 +392,7 @@ mod test {
 
         boot_services.expect_close_protocol().returning(|_, _, _, _| efi::Status::SUCCESS);
 
-        let uefi_hid_io = UefiHidIo::new(boot_services, agent, controller, true).unwrap();
+        let uefi_hid_io = UefiHidIo::new(agent, controller, true).unwrap();
 
         uefi_hid_io.set_output_report(None, &TEST_REPORT0).unwrap();
         uefi_hid_io.set_output_report(Some(1), &TEST_REPORT1).unwrap();
@@ -405,7 +403,7 @@ mod test {
 
     #[test]
     fn set_receiver_should_install_receiver() {
-        let boot_services = create_fake_static_boot_service();
+        let boot_services = MockBootServices::new();
         let controller: efi::Handle = 0x1234 as efi::Handle;
         let agent: efi::Handle = 0x4321 as efi::Handle;
 
@@ -417,7 +415,7 @@ mod test {
 
         boot_services.expect_close_protocol().returning(|_, _, _, _| efi::Status::SUCCESS);
 
-        let mut uefi_hid_io = UefiHidIo::new(boot_services, agent, controller, true).unwrap();
+        let mut uefi_hid_io = UefiHidIo::new(agent, controller, true).unwrap();
 
         let mut mock_receiver = MockHidReportReceiver::new();
         mock_receiver

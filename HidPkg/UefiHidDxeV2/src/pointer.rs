@@ -398,16 +398,14 @@ mod test {
     // object, and the mock object itself expects to be "mut", which makes it hard to handle as a single global static.
     // Instead, raw pointers are used to simulate a MockUefiBootServices instance with 'static lifetime.
     // This object needs to outlive anything that uses it - once created, it will live until the end of the program.
-    fn create_fake_static_boot_service() -> &'static mut MockUefiBootServices {
-        unsafe { Box::into_raw(Box::new(MockUefiBootServices::new())).as_mut().unwrap() }
-    }
+    pub static mut MOCK_BOOT_SERVICES: MaybeUninit<MockBootServices> = MaybeUninit::uninit();
 
     #[test]
     fn pointer_initialize_should_fail_if_report_descriptor_not_supported() {
-        let boot_services = create_fake_static_boot_service();
+        let boot_services = MockBootServices::new();
 
         let agent = 0x1 as efi::Handle;
-        let mut pointer_handler = PointerHidHandler::new(boot_services, agent);
+        let mut pointer_handler = PointerHidHandler::new(agent);
         let mut hid_io = MockHidIo::new();
         hid_io
             .expect_get_report_descriptor()
@@ -419,7 +417,7 @@ mod test {
 
     #[test]
     fn successful_pointer_initialize_should_install_protocol_and_drop_should_tear_it_down() {
-        let boot_services = create_fake_static_boot_service();
+        let boot_services = MockBootServices::new();
         static mut ABS_PTR_INTERFACE: *mut c_void = core::ptr::null_mut();
 
         // expected on PointerHidHandler::initialize().
@@ -438,7 +436,7 @@ mod test {
         boot_services.expect_close_event().returning(|_| efi::Status::SUCCESS);
 
         let agent = 0x1 as efi::Handle;
-        let mut pointer_handler = PointerHidHandler::new(boot_services, agent);
+        let mut pointer_handler = PointerHidHandler::new(agent);
         let mut hid_io = MockHidIo::new();
         hid_io
             .expect_get_report_descriptor()
@@ -452,7 +450,7 @@ mod test {
 
     #[test]
     fn receive_report_should_process_relative_reports() {
-        let boot_services = create_fake_static_boot_service();
+        let boot_services = MockBootServices::new();
 
         static mut ABS_PTR_INTERFACE: *mut c_void = core::ptr::null_mut();
 
@@ -483,7 +481,7 @@ mod test {
         });
 
         let agent = 0x1 as efi::Handle;
-        let mut pointer_handler = PointerHidHandler::new(boot_services, agent);
+        let mut pointer_handler = PointerHidHandler::new(agent);
         let mut hid_io = MockHidIo::new();
         hid_io
             .expect_get_report_descriptor()
@@ -549,7 +547,7 @@ mod test {
 
     #[test]
     fn receive_report_should_process_absolute_reports() {
-        let boot_services = create_fake_static_boot_service();
+        let boot_services = MockBootServices::new();
         static mut ABS_PTR_INTERFACE: *mut c_void = core::ptr::null_mut();
 
         // expected on PointerHidHandler::initialize().
@@ -579,7 +577,7 @@ mod test {
         });
 
         let agent = 0x1 as efi::Handle;
-        let mut pointer_handler = PointerHidHandler::new(boot_services, agent);
+        let mut pointer_handler = PointerHidHandler::new(agent);
         let mut hid_io = MockHidIo::new();
         hid_io
             .expect_get_report_descriptor()
@@ -608,7 +606,7 @@ mod test {
 
     #[test]
     fn bad_reports_should_be_processed_with_best_effort() {
-        let boot_services = create_fake_static_boot_service();
+        let boot_services = MockBootServices::new();
         static mut ABS_PTR_INTERFACE: *mut c_void = core::ptr::null_mut();
 
         // expected on PointerHidHandler::initialize().
@@ -638,7 +636,7 @@ mod test {
         });
 
         let agent = 0x1 as efi::Handle;
-        let mut pointer_handler = PointerHidHandler::new(boot_services, agent);
+        let mut pointer_handler = PointerHidHandler::new(agent);
         let mut hid_io = MockHidIo::new();
         hid_io
             .expect_get_report_descriptor()

@@ -446,27 +446,25 @@ mod test {
     // object, and the mock object itself expects to be "mut", which makes it hard to handle as a single global static.
     // Instead, raw pointers are used to simulate a MockUefiBootServices instance with 'static lifetime.
     // This object needs to outlive anything that uses it - once created, it will live until the end of the program.
-    fn create_fake_static_boot_service() -> &'static mut MockUefiBootServices {
-        unsafe { Box::into_raw(Box::new(MockUefiBootServices::new())).as_mut().unwrap() }
-    }
+    pub static mut MOCK_BOOT_SERVICES: MaybeUninit<MockBootServices> = MaybeUninit::uninit();
 
     #[test]
     fn install_should_install_simple_text_in_ex_interface() {
-        let boot_services = create_fake_static_boot_service();
+        let boot_services = MockBootServices::new();
         boot_services.expect_create_event().returning(|_, _, _, _, _| efi::Status::SUCCESS);
         boot_services.expect_install_protocol_interface().returning(|_, protocol, _, _| {
             assert_eq!(unsafe { protocol.read() }, protocols::simple_text_input_ex::PROTOCOL_GUID);
             efi::Status::SUCCESS
         });
-        let mut keyboard_handler = KeyboardHidHandler::new(boot_services, 1 as efi::Handle);
+        let mut keyboard_handler = KeyboardHidHandler::new(1 as efi::Handle);
 
-        SimpleTextInExFfi::install(boot_services, 2 as efi::Handle, &mut keyboard_handler).unwrap();
+        SimpleTextInExFfi::install(2 as efi::Handle, &mut keyboard_handler).unwrap();
     }
 
     #[test]
     fn uninstall_should_uninstall_simple_text_in_interface() {
         static CONTEXT_PTR: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
-        let boot_services = create_fake_static_boot_service();
+        let boot_services = MockBootServices::new();
 
         // used in install
         boot_services.expect_create_event().returning(|_, _, _, _, _| efi::Status::SUCCESS);
@@ -492,18 +490,18 @@ mod test {
         });
         boot_services.expect_close_event().returning(|_| efi::Status::SUCCESS);
 
-        let mut keyboard_handler = KeyboardHidHandler::new(boot_services, 1 as efi::Handle);
+        let mut keyboard_handler = KeyboardHidHandler::new(1 as efi::Handle);
 
-        SimpleTextInExFfi::install(boot_services, 2 as efi::Handle, &mut keyboard_handler).unwrap();
+        SimpleTextInExFfi::install(2 as efi::Handle, &mut keyboard_handler).unwrap();
         assert_ne!(CONTEXT_PTR.load(Ordering::SeqCst), ptr::null_mut());
 
-        SimpleTextInExFfi::uninstall(boot_services, 1 as efi::Handle, 2 as efi::Handle).unwrap();
+        SimpleTextInExFfi::uninstall(1 as efi::Handle, 2 as efi::Handle).unwrap();
     }
 
     #[test]
     fn reset_should_invoke_reset() {
         static CONTEXT_PTR: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
-        let boot_services = create_fake_static_boot_service();
+        let boot_services = MockBootServices::new();
 
         // used in install
         boot_services.expect_create_event().returning(|_, _, _, _, _| efi::Status::SUCCESS);
@@ -554,10 +552,10 @@ mod test {
         });
         boot_services.expect_close_event().returning(|_| efi::Status::SUCCESS);
 
-        let mut keyboard_handler = KeyboardHidHandler::new(boot_services, 1 as efi::Handle);
+        let mut keyboard_handler = KeyboardHidHandler::new(1 as efi::Handle);
         keyboard_handler.set_controller(Some(2 as efi::Handle));
 
-        SimpleTextInExFfi::install(boot_services, 2 as efi::Handle, &mut keyboard_handler).unwrap();
+        SimpleTextInExFfi::install(2 as efi::Handle, &mut keyboard_handler).unwrap();
         assert_ne!(CONTEXT_PTR.load(Ordering::SeqCst), ptr::null_mut());
 
         let this = CONTEXT_PTR.load(Ordering::SeqCst) as *mut protocols::simple_text_input_ex::Protocol;
@@ -570,7 +568,7 @@ mod test {
     #[test]
     fn read_key_stroke_should_read_keystrokes() {
         static CONTEXT_PTR: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
-        let boot_services = create_fake_static_boot_service();
+        let boot_services = MockBootServices::new();
 
         // used in install
         boot_services.expect_create_event().returning(|_, _, _, _, _| efi::Status::SUCCESS);
@@ -589,7 +587,7 @@ mod test {
         boot_services.expect_open_protocol().returning(|_, _, _, _, _, _| efi::Status::NOT_FOUND);
         boot_services.expect_locate_protocol().returning(|_, _, _| efi::Status::NOT_FOUND);
 
-        let mut keyboard_handler = KeyboardHidHandler::new(boot_services, 1 as efi::Handle);
+        let mut keyboard_handler = KeyboardHidHandler::new(1 as efi::Handle);
 
         let mut hid_io = MockHidIo::new();
         hid_io.expect_set_output_report().returning(|_, _| Ok(()));
@@ -600,7 +598,7 @@ mod test {
         keyboard_handler.set_layout(Some(hii_keyboard_layout::get_default_keyboard_layout()));
         keyboard_handler.initialize(2 as efi::Handle, &hid_io).unwrap();
 
-        SimpleTextInExFfi::install(boot_services, 2 as efi::Handle, &mut keyboard_handler).unwrap();
+        SimpleTextInExFfi::install(2 as efi::Handle, &mut keyboard_handler).unwrap();
         assert_ne!(CONTEXT_PTR.load(Ordering::SeqCst), ptr::null_mut());
 
         let report: &[u8] = &[0x00, 0x00, 0x04, 0x05, 0x06, 0x00, 0x00, 0x00];
@@ -724,7 +722,7 @@ mod test {
     #[test]
     fn set_state_should_set_state() {
         static CONTEXT_PTR: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
-        let boot_services = create_fake_static_boot_service();
+        let boot_services = MockBootServices::new();
 
         // used in install
         boot_services.expect_create_event().returning(|_, _, _, _, _| efi::Status::SUCCESS);
@@ -769,7 +767,7 @@ mod test {
             efi::Status::SUCCESS
         });
 
-        let mut keyboard_handler = KeyboardHidHandler::new(boot_services, 1 as efi::Handle);
+        let mut keyboard_handler = KeyboardHidHandler::new(1 as efi::Handle);
 
         let mut hid_io = MockHidIo::new();
         hid_io.expect_set_output_report().returning(|_, _| Ok(()));
@@ -780,7 +778,7 @@ mod test {
         keyboard_handler.set_layout(Some(hii_keyboard_layout::get_default_keyboard_layout()));
         keyboard_handler.initialize(2 as efi::Handle, &hid_io).unwrap();
 
-        SimpleTextInExFfi::install(boot_services, 2 as efi::Handle, &mut keyboard_handler).unwrap();
+        SimpleTextInExFfi::install(2 as efi::Handle, &mut keyboard_handler).unwrap();
         assert_ne!(CONTEXT_PTR.load(Ordering::SeqCst), ptr::null_mut());
 
         let this = CONTEXT_PTR.load(Ordering::SeqCst) as *mut protocols::simple_text_input_ex::Protocol;
@@ -811,7 +809,7 @@ mod test {
         static KEY_NOTIFIED: AtomicBool = AtomicBool::new(false);
         static KEY2_NOTIFIED: AtomicBool = AtomicBool::new(false);
 
-        let boot_services = create_fake_static_boot_service();
+        let boot_services = MockBootServices::new();
 
         // used in install
         boot_services.expect_create_event().returning(|_, _, _, _, _| efi::Status::SUCCESS);
@@ -835,7 +833,7 @@ mod test {
         });
         boot_services.expect_open_protocol().returning(|_, _, _, _, _, _| efi::Status::NOT_FOUND);
 
-        let mut keyboard_handler = KeyboardHidHandler::new(boot_services, 1 as efi::Handle);
+        let mut keyboard_handler = KeyboardHidHandler::new(1 as efi::Handle);
 
         let mut hid_io = MockHidIo::new();
         hid_io.expect_set_output_report().returning(|_, _| Ok(()));
@@ -847,7 +845,7 @@ mod test {
         keyboard_handler.initialize(2 as efi::Handle, &hid_io).unwrap();
         keyboard_handler.set_notify_event(NOTIFY_EVENT);
 
-        SimpleTextInExFfi::install(boot_services, 2 as efi::Handle, &mut keyboard_handler).unwrap();
+        SimpleTextInExFfi::install(2 as efi::Handle, &mut keyboard_handler).unwrap();
         assert_ne!(CONTEXT_PTR.load(Ordering::SeqCst), ptr::null_mut());
 
         extern "efiapi" fn key_notify_callback_a(
@@ -953,7 +951,7 @@ mod test {
         static CONTEXT_PTR: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
         static RECEIVED_EVENT: AtomicBool = AtomicBool::new(false);
 
-        let boot_services = create_fake_static_boot_service();
+        let boot_services = MockBootServices::new();
 
         // used in install
         boot_services.expect_create_event().returning(|_, _, _, _, _| efi::Status::SUCCESS);
@@ -974,7 +972,7 @@ mod test {
             efi::Status::SUCCESS
         });
 
-        let mut keyboard_handler = KeyboardHidHandler::new(boot_services, 1 as efi::Handle);
+        let mut keyboard_handler = KeyboardHidHandler::new(1 as efi::Handle);
 
         let mut hid_io = MockHidIo::new();
         hid_io.expect_set_output_report().returning(|_, _| Ok(()));

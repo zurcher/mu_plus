@@ -792,14 +792,12 @@ mod test {
     // object, and the mock object itself expects to be "mut", which makes it hard to handle as a single global static.
     // Instead, raw pointers are used to simulate a MockUefiBootServices instance with 'static lifetime.
     // This object needs to outlive anything that uses it - once created, it will live until the end of the program.
-    fn create_fake_static_boot_service() -> &'static mut MockUefiBootServices {
-        unsafe { Box::into_raw(Box::new(MockUefiBootServices::new())).as_mut().unwrap() }
-    }
+    pub static mut MOCK_BOOT_SERVICES: MaybeUninit<MockBootServices> = MaybeUninit::uninit();
 
     #[test]
     fn keyboard_initialize_should_fail_for_unsupported_descriptors() {
-        let boot_services = create_fake_static_boot_service();
-        let mut keyboard_handler = KeyboardHidHandler::new(boot_services, 1 as efi::Handle);
+        let boot_services = MockBootServices::new();
+        let mut keyboard_handler = KeyboardHidHandler::new(1 as efi::Handle);
         let mut hid_io = MockHidIo::new();
         hid_io.expect_set_output_report().returning(|_, _| Ok(()));
         hid_io
@@ -811,7 +809,7 @@ mod test {
 
     #[test]
     fn keyboard_initialization_should_succeed_for_supported_descriptors() {
-        let boot_services = create_fake_static_boot_service();
+        let boot_services = MockBootServices::new();
         boot_services.expect_create_event().returning(|_, _, _, _, _| efi::Status::SUCCESS);
         boot_services.expect_create_event_ex().returning(|_, _, _, _, _, _| efi::Status::SUCCESS);
         boot_services.expect_install_protocol_interface().returning(|_, _, _, _| efi::Status::SUCCESS);
@@ -821,7 +819,7 @@ mod test {
         boot_services.expect_raise_tpl().returning(|_| Tpl::APPLICATION);
         boot_services.expect_restore_tpl().returning(|_| ());
 
-        let mut keyboard_handler = KeyboardHidHandler::new(boot_services, 1 as efi::Handle);
+        let mut keyboard_handler = KeyboardHidHandler::new(1 as efi::Handle);
         let mut hid_io = MockHidIo::new();
         hid_io.expect_set_output_report().returning(|_, _| Ok(()));
         hid_io
@@ -835,7 +833,7 @@ mod test {
 
     #[test]
     fn keyboard_should_process_input_reports() {
-        let boot_services = create_fake_static_boot_service();
+        let boot_services = MockBootServices::new();
         boot_services.expect_create_event().returning(|_, _, _, _, _| efi::Status::SUCCESS);
         boot_services.expect_create_event_ex().returning(|_, _, _, _, _, _| efi::Status::SUCCESS);
         boot_services.expect_install_protocol_interface().returning(|_, _, _, _| efi::Status::SUCCESS);
@@ -845,7 +843,7 @@ mod test {
         boot_services.expect_raise_tpl().returning(|_| Tpl::APPLICATION);
         boot_services.expect_restore_tpl().returning(|_| ());
 
-        let mut keyboard_handler = KeyboardHidHandler::new(boot_services, 1 as efi::Handle);
+        let mut keyboard_handler = KeyboardHidHandler::new(1 as efi::Handle);
         let mut hid_io = MockHidIo::new();
         hid_io.expect_set_output_report().returning(|_, _| Ok(()));
         hid_io
@@ -947,7 +945,7 @@ mod test {
 
     #[test]
     fn keyboard_should_install_layout_if_not_already_present() {
-        let boot_services = create_fake_static_boot_service();
+        let boot_services = MockBootServices::new();
         boot_services.expect_create_event().returning(|_, _, _, _, event| unsafe {
             event.write(3 as efi::Event);
             efi::Status::SUCCESS
@@ -1019,7 +1017,7 @@ mod test {
             _this: *const protocols::hii_database::Protocol,
             _key_guid: *mut efi::Guid,
         ) -> efi::Status {
-            let boot_services = create_fake_static_boot_service();
+            let boot_services = MockBootServices::new();
             boot_services.expect_raise_tpl().returning(|_| Tpl::APPLICATION);
             boot_services.expect_restore_tpl().returning(|_| ());
             boot_services.expect_signal_event().returning(|_| efi::Status::SUCCESS);
@@ -1041,7 +1039,7 @@ mod test {
                 efi::Status::SUCCESS
             });
 
-            let context = LayoutChangeContext { boot_services: boot_services, keyboard_handler: unsafe { HANDLER } };
+            let context = LayoutChangeContext { keyboard_handler: unsafe { HANDLER } };
             on_layout_update(
                 3 as efi::Event,
                 &context as *const LayoutChangeContext as *mut LayoutChangeContext as *mut c_void,
@@ -1067,7 +1065,7 @@ mod test {
             efi::Status::SUCCESS
         });
 
-        let mut keyboard_handler = KeyboardHidHandler::new(boot_services, 1 as efi::Handle);
+        let mut keyboard_handler = KeyboardHidHandler::new(1 as efi::Handle);
 
         unsafe { HANDLER = &mut keyboard_handler as *mut KeyboardHidHandler };
 
@@ -1082,7 +1080,7 @@ mod test {
 
     #[test]
     fn reset_should_reset_keyboard() {
-        let boot_services = create_fake_static_boot_service();
+        let boot_services = MockBootServices::new();
         boot_services.expect_create_event().returning(|_, _, _, _, _| efi::Status::SUCCESS);
         boot_services.expect_create_event_ex().returning(|_, _, _, _, _, _| efi::Status::SUCCESS);
         boot_services.expect_install_protocol_interface().returning(|_, _, _, _| efi::Status::SUCCESS);
@@ -1092,7 +1090,7 @@ mod test {
         boot_services.expect_raise_tpl().returning(|_| Tpl::APPLICATION);
         boot_services.expect_restore_tpl().returning(|_| ());
 
-        let mut keyboard_handler = KeyboardHidHandler::new(boot_services, 1 as efi::Handle);
+        let mut keyboard_handler = KeyboardHidHandler::new(1 as efi::Handle);
         let mut hid_io = MockHidIo::new();
         hid_io
             .expect_get_report_descriptor()
@@ -1131,7 +1129,7 @@ mod test {
 
     #[test]
     fn misc_functions_test() {
-        let boot_services = create_fake_static_boot_service();
+        let boot_services = MockBootServices::new();
         boot_services.expect_create_event().returning(|_, _, _, _, _| efi::Status::SUCCESS);
         boot_services.expect_create_event_ex().returning(|_, _, _, _, _, _| efi::Status::SUCCESS);
         boot_services.expect_install_protocol_interface().returning(|_, _, _, _| efi::Status::SUCCESS);
@@ -1141,7 +1139,7 @@ mod test {
         boot_services.expect_raise_tpl().returning(|_| Tpl::APPLICATION);
         boot_services.expect_restore_tpl().returning(|_| ());
 
-        let mut keyboard_handler = KeyboardHidHandler::new(boot_services, 1 as efi::Handle);
+        let mut keyboard_handler = KeyboardHidHandler::new(1 as efi::Handle);
         let mut hid_io = MockHidIo::new();
         hid_io.expect_set_output_report().returning(|_, _| Ok(()));
         hid_io
@@ -1196,7 +1194,7 @@ mod test {
 
     #[test]
     fn insert_and_remove_key_notifies_should_update_key_notify_structures() {
-        let boot_services = create_fake_static_boot_service();
+        let boot_services = MockBootServices::new();
         boot_services.expect_create_event().returning(|_, _, _, _, _| efi::Status::SUCCESS);
         boot_services.expect_create_event_ex().returning(|_, _, _, _, _, _| efi::Status::SUCCESS);
         boot_services.expect_install_protocol_interface().returning(|_, _, _, _| efi::Status::SUCCESS);
@@ -1206,7 +1204,7 @@ mod test {
         boot_services.expect_raise_tpl().returning(|_| Tpl::APPLICATION);
         boot_services.expect_restore_tpl().returning(|_| ());
 
-        let mut keyboard_handler = KeyboardHidHandler::new(boot_services, 1 as efi::Handle);
+        let mut keyboard_handler = KeyboardHidHandler::new(1 as efi::Handle);
         let mut hid_io = MockHidIo::new();
         hid_io.expect_set_output_report().returning(|_, _| Ok(()));
         hid_io
