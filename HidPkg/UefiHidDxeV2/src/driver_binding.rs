@@ -92,9 +92,14 @@ impl UefiDriverBinding {
     /// Uninstalls the binding from the UEFI core.
     pub fn uninstall(handle: efi::Handle) -> Result<(), efi::Status> {
         unsafe {
-            let interface = static_boot_services().handle_protocol_unchecked(handle, &protocol_handler::DriverBinding)?;
+            let interface =
+                static_boot_services().handle_protocol_unchecked(handle, &protocol_handler::DriverBinding)?;
             // SAFETY: `interface` is expected to be valid if handle_protocol didn't return Err
-            static_boot_services().uninstall_protocol_interface_unchecked(handle, &protocol_handler::DriverBinding, interface)?;
+            static_boot_services().uninstall_protocol_interface_unchecked(
+                handle,
+                &protocol_handler::DriverBinding,
+                interface,
+            )?;
             drop(Box::from_raw(interface as *mut UefiDriverBinding));
         }
         Ok(())
@@ -160,7 +165,6 @@ mod test {
 
     #[test]
     fn new_should_instantiate_new_uefi_driver_binding() {
-        let boot_services = MockBootServices::new();
         let binding = MockDriverBinding::new();
         let handle = 0x1234 as efi::Handle;
         let driver_binding = UefiDriverBinding::new(Box::new(binding), handle);
@@ -175,122 +179,152 @@ mod test {
 
     #[test]
     fn install_should_install_the_driver_binding() {
-        let boot_services = MockBootServices::new();
-        //expect a call to install_protocol_interface
-        boot_services
-            .expect_install_protocol_interface()
-            .withf(|handle, protocol, interface_type, interface| {
-                assert_ne!(*handle, core::ptr::null_mut());
-                assert_eq!(unsafe { **protocol }, protocols::driver_binding::PROTOCOL_GUID);
-                assert_eq!(*interface_type, efi::NATIVE_INTERFACE);
-                assert_ne!(*interface, core::ptr::null_mut());
-                true
-            })
-            .returning(|_, _, _, _| efi::Status::SUCCESS);
+        with_global_lock(|| {
+            let boot_services = MockBootServices::new();
+            //expect a call to install_protocol_interface
+            boot_services
+                .expect_install_protocol_interface()
+                .withf(|handle, protocol, interface_type, interface| {
+                    assert_ne!(*handle, core::ptr::null_mut());
+                    assert_eq!(unsafe { **protocol }, protocols::driver_binding::PROTOCOL_GUID);
+                    assert_eq!(*interface_type, efi::NATIVE_INTERFACE);
+                    assert_ne!(*interface, core::ptr::null_mut());
+                    true
+                })
+                .returning(|_, _, _, _| efi::Status::SUCCESS);
+            unsafe { MOCK_BOOT_SERVICES.write(boot_services) };
 
-        let handle = 0x1234 as efi::Handle;
+            let handle = 0x1234 as efi::Handle;
 
-        let binding = MockDriverBinding::new();
-        let driver_binding = UefiDriverBinding::new(Box::new(binding), handle);
-        driver_binding.install().unwrap();
+            let binding = MockDriverBinding::new();
+            let driver_binding = UefiDriverBinding::new(Box::new(binding), handle);
+            driver_binding.install().unwrap();
+            unsafe { MOCK_BOOT_SERVICES.assume_init_drop() };
+        })
+        .unwrap()
     }
 
     #[test]
     fn install_should_report_failures_to_install_the_driver_binding() {
-        let boot_services = MockBootServices::new();
+        with_global_lock(|| {
+            let boot_services = MockBootServices::new();
 
-        //expect a call to install_protocol_interface
-        boot_services.expect_install_protocol_interface().returning(|_, _, _, _| efi::Status::OUT_OF_RESOURCES);
+            //expect a call to install_protocol_interface
+            boot_services.expect_install_protocol_interface().returning(|_, _, _, _| efi::Status::OUT_OF_RESOURCES);
+            unsafe { MOCK_BOOT_SERVICES.write(boot_services) };
 
-        let handle = 0x1234 as efi::Handle;
+            let handle = 0x1234 as efi::Handle;
 
-        let binding = MockDriverBinding::new();
-        let driver_binding = UefiDriverBinding::new(Box::new(binding), handle);
-        assert_eq!(driver_binding.install(), Err(efi::Status::OUT_OF_RESOURCES));
+            let binding = MockDriverBinding::new();
+            let driver_binding = UefiDriverBinding::new(Box::new(binding), handle);
+            assert_eq!(driver_binding.install(), Err(efi::Status::OUT_OF_RESOURCES));
+            unsafe { MOCK_BOOT_SERVICES.assume_init_drop() };
+        })
+        .unwrap()
     }
 
     #[test]
     fn uninstall_should_uninstall_the_driver_binding() {
-        let boot_services = MockBootServices::new();
-        //expect a call to install_protocol_interface
-        boot_services.expect_install_protocol_interface().returning(|handle, protocol, interface_type, interface| {
-            unsafe {
-                assert_ne!(handle.read(), core::ptr::null_mut());
-                assert_eq!(protocol.read(), protocols::driver_binding::PROTOCOL_GUID);
-                assert_eq!(interface_type, efi::NATIVE_INTERFACE);
+        with_global_lock(|| {
+            let boot_services = MockBootServices::new();
+            //expect a call to install_protocol_interface
+            boot_services.expect_install_protocol_interface().returning(
+                |handle, protocol, interface_type, interface| {
+                    unsafe {
+                        assert_ne!(handle.read(), core::ptr::null_mut());
+                        assert_eq!(protocol.read(), protocols::driver_binding::PROTOCOL_GUID);
+                        assert_eq!(interface_type, efi::NATIVE_INTERFACE);
+                        assert_ne!(interface, core::ptr::null_mut());
+                    }
+                    efi::Status::SUCCESS
+                },
+            );
+            boot_services.expect_uninstall_protocol_interface().returning(|handle, protocol, interface| {
+                assert_ne!(handle, core::ptr::null_mut());
+                assert_eq!(unsafe { protocol.read() }, protocols::driver_binding::PROTOCOL_GUID);
                 assert_ne!(interface, core::ptr::null_mut());
-            }
-            efi::Status::SUCCESS
-        });
-        boot_services.expect_uninstall_protocol_interface().returning(|handle, protocol, interface| {
-            assert_ne!(handle, core::ptr::null_mut());
-            assert_eq!(unsafe { protocol.read() }, protocols::driver_binding::PROTOCOL_GUID);
-            assert_ne!(interface, core::ptr::null_mut());
-            efi::Status::SUCCESS
-        });
-        let handle = 0x1234 as efi::Handle;
+                efi::Status::SUCCESS
+            });
+            unsafe { MOCK_BOOT_SERVICES.write(boot_services) };
+            let handle = 0x1234 as efi::Handle;
 
-        let binding = MockDriverBinding::new();
-        let driver_binding = UefiDriverBinding::new(Box::new(binding), handle);
-        let binding_ptr = driver_binding.install().unwrap();
+            let binding = MockDriverBinding::new();
+            let driver_binding = UefiDriverBinding::new(Box::new(binding), handle);
+            let binding_ptr = driver_binding.install().unwrap();
 
-        let driver_binding = unsafe { UefiDriverBinding::uninstall(binding_ptr) }.unwrap();
+            let driver_binding = unsafe { UefiDriverBinding::uninstall(binding_ptr) }.unwrap();
 
-        assert!(driver_binding.uefi_binding.supported == UefiDriverBinding::driver_binding_supported);
-        assert!(driver_binding.uefi_binding.start == UefiDriverBinding::driver_binding_start);
-        assert!(driver_binding.uefi_binding.stop == UefiDriverBinding::driver_binding_stop);
-        assert_eq!(driver_binding.uefi_binding.version, 1);
-        assert_eq!(driver_binding.uefi_binding.image_handle, handle);
-        assert_eq!(driver_binding.uefi_binding.driver_binding_handle, handle);
+            assert!(driver_binding.uefi_binding.supported == UefiDriverBinding::driver_binding_supported);
+            assert!(driver_binding.uefi_binding.start == UefiDriverBinding::driver_binding_start);
+            assert!(driver_binding.uefi_binding.stop == UefiDriverBinding::driver_binding_stop);
+            assert_eq!(driver_binding.uefi_binding.version, 1);
+            assert_eq!(driver_binding.uefi_binding.image_handle, handle);
+            assert_eq!(driver_binding.uefi_binding.driver_binding_handle, handle);
+            unsafe { MOCK_BOOT_SERVICES.assume_init_drop() };
+        })
+        .unwrap()
     }
 
     #[test]
     fn uninstall_should_report_failures_to_uninstall_the_driver() {
-        let boot_services = MockBootServices::new();
+        with_global_lock(|| {
+            let boot_services = MockBootServices::new();
 
-        //expect a call to install_protocol_interface
-        boot_services.expect_install_protocol_interface().returning(|_, _, _, _| efi::Status::SUCCESS);
-        boot_services.expect_uninstall_protocol_interface().returning(|_, _, _| efi::Status::INVALID_PARAMETER);
+            //expect a call to install_protocol_interface
+            boot_services.expect_install_protocol_interface().returning(|_, _, _, _| efi::Status::SUCCESS);
+            boot_services.expect_uninstall_protocol_interface().returning(|_, _, _| efi::Status::INVALID_PARAMETER);
+            unsafe { MOCK_BOOT_SERVICES.write(boot_services) };
 
-        let handle = 0x1234 as efi::Handle;
+            let handle = 0x1234 as efi::Handle;
 
-        let binding = MockDriverBinding::new();
-        let driver_binding = UefiDriverBinding::new(Box::new(binding), handle);
-        let binding_ptr = driver_binding.install().unwrap();
+            let binding = MockDriverBinding::new();
+            let driver_binding = UefiDriverBinding::new(Box::new(binding), handle);
+            let binding_ptr = driver_binding.install().unwrap();
 
-        assert_eq!(unsafe { UefiDriverBinding::uninstall(binding_ptr) }.err(), Some(efi::Status::INVALID_PARAMETER));
+            assert_eq!(
+                unsafe { UefiDriverBinding::uninstall(binding_ptr) }.err(),
+                Some(efi::Status::INVALID_PARAMETER)
+            );
+            unsafe { MOCK_BOOT_SERVICES.assume_init_drop() };
+        })
+        .unwrap()
     }
 
     #[test]
     fn driver_binding_should_call_driver_binding_routines() {
-        let boot_services = MockBootServices::new();
-        //expect a call to install_protocol_interface
-        boot_services.expect_install_protocol_interface().returning(|_, _, _, _| efi::Status::SUCCESS);
+        with_global_lock(|| {
+            let boot_services = MockBootServices::new();
+            //expect a call to install_protocol_interface
+            boot_services.expect_install_protocol_interface().returning(|_, _, _, _| efi::Status::SUCCESS);
+            unsafe { MOCK_BOOT_SERVICES.write(boot_services) };
 
-        let mut binding = MockDriverBinding::new();
-        binding.expect_driver_binding_supported().returning(|_, _| Ok(()));
-        binding.expect_driver_binding_start().returning(|_, _| Ok(()));
-        binding.expect_driver_binding_stop().returning(|_, _| Ok(()));
+            let mut binding = MockDriverBinding::new();
+            binding.expect_driver_binding_supported().returning(|_, _| Ok(()));
+            binding.expect_driver_binding_start().returning(|_, _| Ok(()));
+            binding.expect_driver_binding_stop().returning(|_, _| Ok(()));
 
-        let handle = 0x1234 as efi::Handle;
-        let driver_binding = UefiDriverBinding::new(Box::new(binding), handle);
-        let binding_ptr = driver_binding.install().unwrap();
+            let handle = 0x1234 as efi::Handle;
+            let driver_binding = UefiDriverBinding::new(Box::new(binding), handle);
+            let binding_ptr = driver_binding.install().unwrap();
 
-        let driver_binding_ref = unsafe { binding_ptr.as_ref().unwrap() };
-        let this_ptr = binding_ptr as *mut protocols::driver_binding::Protocol;
+            let driver_binding_ref = unsafe { binding_ptr.as_ref().unwrap() };
+            let this_ptr = binding_ptr as *mut protocols::driver_binding::Protocol;
 
-        let controller_handle = 0x4321 as efi::Handle;
-        assert_eq!(
-            (driver_binding_ref.uefi_binding.supported)(this_ptr, controller_handle, core::ptr::null_mut()),
-            efi::Status::SUCCESS
-        );
-        assert_eq!(
-            (driver_binding_ref.uefi_binding.start)(this_ptr, controller_handle, core::ptr::null_mut()),
-            efi::Status::SUCCESS
-        );
-        assert_eq!(
-            (driver_binding_ref.uefi_binding.stop)(this_ptr, controller_handle, 0, core::ptr::null_mut()),
-            efi::Status::SUCCESS
-        );
+            let controller_handle = 0x4321 as efi::Handle;
+            assert_eq!(
+                (driver_binding_ref.uefi_binding.supported)(this_ptr, controller_handle, core::ptr::null_mut()),
+                efi::Status::SUCCESS
+            );
+            assert_eq!(
+                (driver_binding_ref.uefi_binding.start)(this_ptr, controller_handle, core::ptr::null_mut()),
+                efi::Status::SUCCESS
+            );
+            assert_eq!(
+                (driver_binding_ref.uefi_binding.stop)(this_ptr, controller_handle, 0, core::ptr::null_mut()),
+                efi::Status::SUCCESS
+            );
+            unsafe { MOCK_BOOT_SERVICES.assume_init_drop() };
+        })
+        .unwrap()
     }
 }
