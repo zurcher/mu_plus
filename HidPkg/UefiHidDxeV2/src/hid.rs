@@ -47,7 +47,8 @@ use core::ops::Deref;
 use mockall::automock;
 use r_efi::efi;
 
-use boot_services::{protocol_handler::Protocol, BootServices};
+use boot_services::BootServices;
+use uefi_protocol::Protocol;
 use mu_rust_helpers::guid::guid;
 
 use crate::{

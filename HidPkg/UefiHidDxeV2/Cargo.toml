@@ -25,6 +25,7 @@ rustversion = {workspace=true}
 RustAdvancedLoggerDxe = {workspace=true}
 scroll = {workspace=true}
 boot_services = { workspace = true }
+uefi_protocol = { workspace = true }
 mu_rust_helpers = { workspace = true }
 
 [target.'cfg(target_os = "uefi")'.dependencies]

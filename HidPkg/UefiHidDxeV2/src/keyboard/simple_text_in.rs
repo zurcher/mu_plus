@@ -14,7 +14,8 @@ use core::{ffi::c_void, ptr};
 use r_efi::{efi, protocols};
 use rust_advanced_logger_dxe::{debugln, DEBUG_ERROR};
 
-use boot_services::{event::EventType, protocol_handler, tpl::Tpl, BootServices};
+use boot_services::{event::EventType, tpl::Tpl, BootServices};
+use uefi_protocol;
 
 use crate::{
     hid_io::{HidIoFactory, UefiHidIoFactory},
@@ -76,7 +77,7 @@ impl SimpleTextInFfi {
         let status = unsafe {
             static_boot_services().install_protocol_interface_unchecked(
                 Some(controller),
-                &protocol_handler::SimpleTextInput,
+                &uefi_protocol::SimpleTextInput,
                 simple_text_in_ptr as *mut c_void,
             )
         };
@@ -97,7 +98,7 @@ impl SimpleTextInFfi {
         let status = unsafe {
             static_boot_services().open_protocol_unchecked(
                 controller,
-                &protocol_handler::SimpleTextInput,
+                &uefi_protocol::SimpleTextInput,
                 agent,
                 controller,
                 efi::OPEN_PROTOCOL_GET_PROTOCOL,
@@ -114,7 +115,7 @@ impl SimpleTextInFfi {
         let status = unsafe {
             static_boot_services().uninstall_protocol_interface_unchecked(
                 controller,
-                &protocol_handler::SimpleTextInput,
+                &uefi_protocol::SimpleTextInput,
                 simple_text_in_ptr as *mut c_void,
             )
         };

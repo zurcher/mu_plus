@@ -14,7 +14,8 @@ use mockall::automock;
 use r_efi::{efi, protocols};
 
 use crate::static_boot_services;
-use boot_services::{protocol_handler, BootServices};
+use boot_services::{c_ptr::PtrMetadata, BootServices};
+use uefi_protocol;
 
 /// Abstracts the UEFI driver binding interface.
 ///
@@ -79,7 +80,7 @@ impl UefiDriverBinding {
 
         let status = static_boot_services().install_protocol_interface(
             Some(handle),
-            &protocol_handler::DriverBinding,
+            &uefi_protocol::DriverBinding,
             &mut uefi_driver_binding.uefi_binding,
         );
         if status.is_err() {
@@ -93,11 +94,11 @@ impl UefiDriverBinding {
     pub fn uninstall(handle: efi::Handle) -> Result<(), efi::Status> {
         unsafe {
             let interface =
-                static_boot_services().handle_protocol_unchecked(handle, &protocol_handler::DriverBinding)?;
+                static_boot_services().handle_protocol_unchecked(handle, &uefi_protocol::DriverBinding)?;
             // SAFETY: `interface` is expected to be valid if handle_protocol didn't return Err
             static_boot_services().uninstall_protocol_interface_unchecked(
                 handle,
-                &protocol_handler::DriverBinding,
+                &uefi_protocol::DriverBinding,
                 interface,
             )?;
             drop(Box::from_raw(interface as *mut UefiDriverBinding));
@@ -153,7 +154,8 @@ impl UefiDriverBinding {
 mod test {
 
     use super::{MockDriverBinding, UefiDriverBinding};
-    use boot_services::{protocol_handler, MockBootServices};
+    use boot_services::MockBootServices;
+    use uefi_protocol;
     use r_efi::{efi, protocols};
 
     // In this module, the usage model for boot_services is global static, and so &'static dyn UefiBootServices is used

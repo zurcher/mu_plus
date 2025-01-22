@@ -12,4 +12,5 @@ path = "src/lib.rs"
 [dependencies]
 r-efi = {workspace=true}
 boot_services = { workspace = true }
+uefi_protocol = { workspace = true }
 mu_rust_helpers = {workspace=true}

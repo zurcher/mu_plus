@@ -17,7 +17,8 @@ use rust_advanced_logger_dxe::{debugln, DEBUG_ERROR, DEBUG_INFO, DEBUG_WARN};
 
 use super::{PointerHidHandler, BUTTON_MAX, BUTTON_MIN, DIGITIZER_SWITCH_MAX, DIGITIZER_SWITCH_MIN};
 use crate::static_boot_services;
-use boot_services::{event::EventType, protocol_handler, tpl::Tpl, BootServices};
+use boot_services::{event::EventType, tpl::Tpl, BootServices};
+use uefi_protocol;
 
 // FFI context
 // Safety: a pointer to PointerHidHandler is included in the context so that it can be reclaimed in the absolute_pointer
@@ -81,7 +82,7 @@ impl PointerContext {
         let status = unsafe {
             static_boot_services().install_protocol_interface_unchecked(
                 Some(controller),
-                &protocol_handler::AbsolutePointer,
+                &uefi_protocol::AbsolutePointer,
                 absolute_pointer_ptr as *mut c_void,
             )
         };
@@ -143,7 +144,7 @@ impl PointerContext {
         let status = unsafe {
             static_boot_services().open_protocol_unchecked(
                 controller,
-                &protocol_handler::AbsolutePointer,
+                &uefi_protocol::AbsolutePointer,
                 agent,
                 controller,
                 efi::OPEN_PROTOCOL_GET_PROTOCOL,
@@ -160,7 +161,7 @@ impl PointerContext {
         let status = unsafe {
             static_boot_services().uninstall_protocol_interface_unchecked(
                 controller,
-                &protocol_handler::AbsolutePointer,
+                &uefi_protocol::AbsolutePointer,
                 absolute_pointer_ptr as *mut c_void,
             )
         };

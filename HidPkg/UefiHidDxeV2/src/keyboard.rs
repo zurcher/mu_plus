@@ -29,7 +29,8 @@ use hidparser::{
 };
 use rust_advanced_logger_dxe::{debugln, function, DEBUG_ERROR, DEBUG_VERBOSE, DEBUG_WARN};
 
-use boot_services::{event::EventType, protocol_handler, tpl::Tpl, BootServices};
+use boot_services::{event::EventType, tpl::Tpl, BootServices};
+use uefi_protocol;
 
 use crate::{
     hid_io::{HidIo, HidReportReceiver},
@@ -327,7 +328,7 @@ impl KeyboardHidHandler {
 
     // Installs a default keyboard layout.
     fn install_default_layout(&mut self) -> Result<(), efi::Status> {
-        let status = unsafe { static_boot_services().locate_protocol(&protocol_handler::HiiDatabase, None) };
+        let status = unsafe { static_boot_services().locate_protocol(&uefi_protocol::HiiDatabase, None) };
         if status.is_err() {
             let status_code = status.err().unwrap();
             debugln!(
@@ -648,7 +649,7 @@ extern "efiapi" fn on_layout_update(_event: efi::Event, context: *mut c_void) {
 
         let keyboard_handler = unsafe { context.keyboard_handler.as_mut() }.expect("bad keyboard handler");
 
-        let status = unsafe { static_boot_services().locate_protocol(&protocol_handler::HiiDatabase, None) };
+        let status = unsafe { static_boot_services().locate_protocol(&uefi_protocol::HiiDatabase, None) };
 
         if status.is_err() {
             //nothing to do if there is no hii protocol.

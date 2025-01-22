@@ -159,7 +159,7 @@ pub mod interface {
     use crate::protocol;
 
     use r_efi::efi;
-    use boot_services::protocol_handler::Protocol;
+    use uefi_protocol::Protocol;
     pub struct HidIoProtocol;
 
     impl Deref for HidIoProtocol {
