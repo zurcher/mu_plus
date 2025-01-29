@@ -72,36 +72,43 @@ impl UefiDriverBinding {
     }
 
     /// Installs the binding with the UEFI core.
-    pub fn install(self) -> Result<(), efi::Status> {
+    pub fn install(
+        self,
+    ) -> Result<PtrMetadata<'static, &'static mut protocols::driver_binding::Protocol>, efi::Status> {
         let handle = self.uefi_binding.driver_binding_handle;
         let uefi_driver_binding: &'static mut UefiDriverBinding = Box::leak(Box::new(self));
-        // Hold raw reference in case install fails
-        let uefi_driver_binding_raw = uefi_driver_binding as *mut UefiDriverBinding;
 
-        let status = static_boot_services().install_protocol_interface(
+        let key = match static_boot_services().install_protocol_interface(
             Some(handle),
             &uefi_protocol::DriverBinding,
             &mut uefi_driver_binding.uefi_binding,
-        );
-        if status.is_err() {
-            drop(unsafe { Box::from_raw(uefi_driver_binding_raw) });
-            status?;
-        }
-        Ok(())
+        ) {
+            Ok((_handle, key)) => key,
+            Err((uefi_driver_binding, status)) => {
+                drop(unsafe {
+                    Box::from_raw(
+                        uefi_driver_binding as *mut protocols::driver_binding::Protocol as *mut UefiDriverBinding,
+                    )
+                });
+                return Err(status);
+            }
+        };
+        Ok(key)
     }
 
     /// Uninstalls the binding from the UEFI core.
-    pub fn uninstall(handle: efi::Handle) -> Result<(), efi::Status> {
+    pub fn uninstall(
+        self,
+        key: PtrMetadata<'static, &mut protocols::driver_binding::Protocol>,
+    ) -> Result<(), efi::Status> {
+        let interface = static_boot_services().uninstall_protocol_interface(
+            self.uefi_binding.driver_binding_handle,
+            &uefi_protocol::DriverBinding,
+            key,
+        )?;
         unsafe {
-            let interface =
-                static_boot_services().handle_protocol_unchecked(handle, &uefi_protocol::DriverBinding)?;
-            // SAFETY: `interface` is expected to be valid if handle_protocol didn't return Err
-            static_boot_services().uninstall_protocol_interface_unchecked(
-                handle,
-                &uefi_protocol::DriverBinding,
-                interface,
-            )?;
-            drop(Box::from_raw(interface as *mut UefiDriverBinding));
+            // SAFETY: The "key"/PtrMetadata ensures this is the same `UefiDriverBinding` that was installed above
+            drop(Box::from_raw(interface));
         }
         Ok(())
     }
@@ -155,8 +162,8 @@ mod test {
 
     use super::{MockDriverBinding, UefiDriverBinding};
     use boot_services::MockBootServices;
-    use uefi_protocol;
     use r_efi::{efi, protocols};
+    use uefi_protocol;
 
     // In this module, the usage model for boot_services is global static, and so &'static dyn UefiBootServices is used
     // throughout the API. For testing, each test will have a different set of expectations on the UefiBootServices mock
