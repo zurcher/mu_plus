@@ -47,6 +47,16 @@ use status_code_runtime::{ReportStatusCode, StatusCodeRuntimeProtocol};
 
 static BOOT_SERVICES: StandardBootServices = StandardBootServices::new_uninit();
 
+#[cfg(not(test))]
+fn static_boot_services() -> &'static impl BootServices {
+    &BOOT_SERVICES
+}
+
+#[cfg(test)]
+fn static_boot_services() -> &'static impl BootServices {
+    unsafe { test::MOCK_BOOT_SERVICES.assume_init_ref() }
+}
+
 /// Matches gMsWheaRSCDataTypeGuid in MsWheaPkg\MsWheaPkg.dec
 /// Matches MS_WHEA_RSC_DATA_TYPE in MsWheaPkg\Private\Guid\MsWheaReportDataType.h
 const MS_WHEA_RSC_DATA_TYPE_GUID: efi::Guid = guid!("91DEEA05-8C0A-4DCD-B91E-F21CA0C68405");
@@ -75,7 +85,7 @@ const MS_WHEA_ERROR_STATUS_TYPE_FATAL: EfiStatusCodeType = EFI_ERROR_MAJOR | EFI
 
 #[repr(C)]
 struct MsWheaRscInternalErrorData {
-    library_id: efi::Guid,
+    library_id:       efi::Guid,
     ihv_sharing_guid: efi::Guid,
     additional_info1: u64,
     additional_info2: u64,
@@ -97,30 +107,7 @@ struct MsWheaRscInternalErrorData {
 ///   @param[in]  library_id    This should identify the library that is emitting this event.
 ///   @param[in]  ihv_id        This should identify the Ihv related to this event if applicable. For example,
 ///                             this would typically be used for TPM and SOC specific events.
-#[cfg(not(tarpaulin_include))]
 pub fn log_telemetry(
-    is_fatal: bool,
-    class_id: EfiStatusCodeValue,
-    extra_data1: u64,
-    extra_data2: u64,
-    component_id: Option<&efi::Guid>,
-    library_id: Option<&efi::Guid>,
-    ihv_id: Option<&efi::Guid>,
-) -> Result<(), efi::Status> {
-    log_telemetry_internal(
-        &BOOT_SERVICES,
-        is_fatal,
-        class_id,
-        extra_data1,
-        extra_data2,
-        component_id,
-        library_id,
-        ihv_id,
-    )
-}
-
-fn log_telemetry_internal<B: BootServices>(
-    boot_services: &B,
     is_fatal: bool,
     class_id: EfiStatusCodeValue,
     extra_data1: u64,
@@ -133,14 +120,14 @@ fn log_telemetry_internal<B: BootServices>(
         if is_fatal { MS_WHEA_ERROR_STATUS_TYPE_FATAL } else { MS_WHEA_ERROR_STATUS_TYPE_INFO };
 
     let error_data = MsWheaRscInternalErrorData {
-        library_id: *library_id.unwrap_or(&guid::ZERO),
+        library_id:       *library_id.unwrap_or(&guid::ZERO),
         ihv_sharing_guid: *ihv_id.unwrap_or(&guid::ZERO),
         additional_info1: extra_data1,
         additional_info2: extra_data2,
     };
 
     StatusCodeRuntimeProtocol::report_status_code(
-        boot_services,
+        static_boot_services(),
         status_code_type,
         class_id,
         0,
@@ -157,6 +144,7 @@ pub fn init_telemetry(efi_boot_services: &efi::BootServices) {
 
 #[cfg(test)]
 mod test {
+    extern crate std;
     use boot_services::MockBootServices;
     use mu_pi::protocols::{
         status_code,
@@ -164,12 +152,24 @@ mod test {
     };
     use mu_rust_helpers::guid::guid;
     use r_efi::efi;
+    use std::any::Any;
 
     use crate::{
-        log_telemetry_internal, status_code_runtime::StatusCodeRuntimeProtocol, MsWheaRscInternalErrorData,
+        log_telemetry, status_code_runtime::StatusCodeRuntimeProtocol, MsWheaRscInternalErrorData,
         MS_WHEA_ERROR_STATUS_TYPE_FATAL,
     };
-    use core::mem::size_of;
+    use core::mem::{size_of, MaybeUninit};
+    static GLOBAL_STATE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// All tests should run from inside this.
+    pub(crate) fn with_global_lock<F: Fn() + std::panic::RefUnwindSafe>(f: F) -> Result<(), Box<dyn Any + Send>> {
+        let _guard = GLOBAL_STATE_TEST_LOCK.lock().unwrap();
+        std::panic::catch_unwind(|| {
+            f();
+        })
+    }
+
+    pub static mut MOCK_BOOT_SERVICES: MaybeUninit<MockBootServices> = MaybeUninit::uninit();
 
     const DATA_SIZE: usize = size_of::<EfiStatusCodeData>() + size_of::<MsWheaRscInternalErrorData>();
     const MOCK_CALLER_ID: efi::Guid = guid!("d0d1d2d3-d4d5-d6d7-d8d9-dadbdcdddedf");
@@ -197,70 +197,80 @@ mod test {
 
     #[test]
     fn try_log_telemetry() {
-        let mut mock_boot_services: MockBootServices = MockBootServices::new();
+        with_global_lock(|| {
+            let mut mock_boot_services: MockBootServices = MockBootServices::new();
 
-        mock_boot_services.expect_locate_protocol().returning(|_: &StatusCodeRuntimeProtocol, registration| unsafe {
-            assert_eq!(registration, None);
-            Ok((&MOCK_STATUS_CODE_RUNTIME_INTERFACE as *const status_code::Protocol as *mut status_code::Protocol)
-                .as_mut()
-                .unwrap())
-        });
+            mock_boot_services.expect_locate_protocol().returning(
+                |_: &StatusCodeRuntimeProtocol, registration| unsafe {
+                    assert_eq!(registration, None);
+                    Ok((&MOCK_STATUS_CODE_RUNTIME_INTERFACE as *const status_code::Protocol
+                        as *mut status_code::Protocol)
+                        .as_mut()
+                        .unwrap())
+                },
+            );
+            unsafe { MOCK_BOOT_SERVICES.write(mock_boot_services) };
 
-        // Test sizes of "repr(C)" structs
-        assert_eq!(size_of::<MsWheaRscInternalErrorData>(), 48);
-        assert_eq!(size_of::<[u8; 68]>(), DATA_SIZE);
+            // Test sizes of "repr(C)" structs
+            assert_eq!(size_of::<MsWheaRscInternalErrorData>(), 48);
+            assert_eq!(size_of::<[u8; 68]>(), DATA_SIZE);
 
-        // Test Deref trait
-        assert_eq!(*StatusCodeRuntimeProtocol, status_code::PROTOCOL_GUID);
-        assert_eq!(
-            Ok(()),
-            log_telemetry_internal(
-                &mock_boot_services,
-                true,
-                MOCK_STATUS_CODE_VALUE,
-                0xb0b1b2b3b4b5b6b7,
-                0xc0c1c2c3c4c5c6c7,
-                Some(&MOCK_CALLER_ID),
-                Some(&guid!("e0e1e2e3-e4e5-e6e7-e8e9-eaebecedeeef")),
-                Some(&guid!("f0f1f2f3-f4f5-f6f7-f8f9-fafbfcfdfeff"))
-            )
-        );
-        assert_eq!(
-            Err(efi::Status::INVALID_PARAMETER),
-            log_telemetry_internal(
-                &mock_boot_services,
-                false,
-                MOCK_STATUS_CODE_VALUE,
-                0xb0b1b2b3b4b5b6b7,
-                0xc0c1c2c3c4c5c6c7,
-                Some(&MOCK_CALLER_ID),
-                None,
-                None
-            )
-        );
+            // Test Deref trait
+            assert_eq!(*StatusCodeRuntimeProtocol, status_code::PROTOCOL_GUID);
+            assert_eq!(
+                Ok(()),
+                log_telemetry(
+                    true,
+                    MOCK_STATUS_CODE_VALUE,
+                    0xb0b1b2b3b4b5b6b7,
+                    0xc0c1c2c3c4c5c6c7,
+                    Some(&MOCK_CALLER_ID),
+                    Some(&guid!("e0e1e2e3-e4e5-e6e7-e8e9-eaebecedeeef")),
+                    Some(&guid!("f0f1f2f3-f4f5-f6f7-f8f9-fafbfcfdfeff"))
+                )
+            );
+            assert_eq!(
+                Err(efi::Status::INVALID_PARAMETER),
+                log_telemetry(
+                    false,
+                    MOCK_STATUS_CODE_VALUE,
+                    0xb0b1b2b3b4b5b6b7,
+                    0xc0c1c2c3c4c5c6c7,
+                    Some(&MOCK_CALLER_ID),
+                    None,
+                    None
+                )
+            );
+            unsafe { MOCK_BOOT_SERVICES.assume_init_drop() };
+        })
+        .unwrap()
     }
 
     #[test]
     fn test_protocol_not_found() {
-        let mut mock_boot_services: MockBootServices = MockBootServices::new();
+        with_global_lock(|| {
+            let mut mock_boot_services: MockBootServices = MockBootServices::new();
 
-        mock_boot_services.expect_locate_protocol().returning(|_: &StatusCodeRuntimeProtocol, registration| {
-            assert_eq!(registration, None);
-            //Simulate "marker protocol" without an Interface
-            Err(efi::Status::NOT_FOUND)
-        });
-        assert_eq!(
-            Err(efi::Status::NOT_FOUND),
-            log_telemetry_internal(
-                &mock_boot_services,
-                false,
-                MOCK_STATUS_CODE_VALUE,
-                0xb0b1b2b3b4b5b6b7,
-                0xc0c1c2c3c4c5c6c7,
-                Some(&MOCK_CALLER_ID),
-                None,
-                None
-            )
-        );
+            mock_boot_services.expect_locate_protocol().returning(|_: &StatusCodeRuntimeProtocol, registration| {
+                assert_eq!(registration, None);
+                //Simulate "marker protocol" without an Interface
+                Err(efi::Status::NOT_FOUND)
+            });
+            unsafe { MOCK_BOOT_SERVICES.write(mock_boot_services) };
+            assert_eq!(
+                Err(efi::Status::NOT_FOUND),
+                log_telemetry(
+                    false,
+                    MOCK_STATUS_CODE_VALUE,
+                    0xb0b1b2b3b4b5b6b7,
+                    0xc0c1c2c3c4c5c6c7,
+                    Some(&MOCK_CALLER_ID),
+                    None,
+                    None
+                )
+            );
+            unsafe { MOCK_BOOT_SERVICES.assume_init_drop() };
+        })
+        .unwrap()
     }
 }
