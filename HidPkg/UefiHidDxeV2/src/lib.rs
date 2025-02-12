@@ -48,7 +48,7 @@ pub fn static_boot_services() -> &'static impl BootServices {
 
 #[cfg(test)]
 pub fn static_boot_services() -> &'static impl BootServices {
-    unsafe { test::MOCK_BOOT_SERVICES.assume_init_ref() }
+    unsafe { test_support::MOCK_BOOT_SERVICES.assume_init_ref() }
 }
 
 /// Global instance of UEFI Runtime Services.

@@ -8,8 +8,9 @@
 //!
 //! SPDX-License-Identifier: BSD-2-Clause-Patent
 //!
-use r_efi::efi;
 use std::any::Any;
+use core::mem::MaybeUninit;
+use boot_services::MockBootServices;
 
 /// A global mutex that can be used for tests to synchronize on access to global state.
 /// Usage model is for tests that affect or assert things against global state to acquire this mutex to ensure that
@@ -18,6 +19,8 @@ use std::any::Any;
 /// longer cares about global state or modifies it (typically this would be the start and end of a test case,
 /// respectively).
 static GLOBAL_STATE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub(crate) static mut MOCK_BOOT_SERVICES: MaybeUninit<MockBootServices> = MaybeUninit::uninit();
 
 /// All tests should run from inside this.
 pub(crate) fn with_global_lock<F: Fn() + std::panic::RefUnwindSafe>(f: F) -> Result<(), Box<dyn Any + Send>> {

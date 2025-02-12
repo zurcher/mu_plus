@@ -48,8 +48,8 @@ use mockall::automock;
 use r_efi::efi;
 
 use boot_services::BootServices;
-use uefi_protocol::Protocol;
 use mu_rust_helpers::guid::guid;
+use uefi_protocol::Protocol;
 
 use crate::{
     driver_binding::DriverBinding,
@@ -192,15 +192,14 @@ impl DriverBinding for HidFactory {
         hid_io.set_report_receiver(hid_splitter)?;
 
         let hid_instance = Box::leak(Box::new(HidInstance::new(hid_io)));
-        // Hold raw reference in case install fails
-        let hid_instance_raw = hid_instance as *mut HidInstance;
 
-        let status = static_boot_services().install_protocol_interface(Some(controller), &HidInstanceProtocol, hid_instance);
-        if status.is_err() {
-            drop(unsafe { Box::from_raw(hid_instance_raw) });
-            status?;
+        match static_boot_services().install_protocol_interface(Some(controller), &HidInstanceProtocol, hid_instance) {
+            Ok(_) => Ok(()),
+            Err((hid_instance, status)) => {
+                drop(unsafe { Box::from_raw(hid_instance) });
+                Err(status)
+            }
         }
-        Ok(())
     }
 
     /// Stops a running HID instance.
@@ -217,7 +216,11 @@ impl DriverBinding for HidFactory {
                 efi::OPEN_PROTOCOL_GET_PROTOCOL,
             )?;
             // SAFETY: `hid_instance` is expected to be valid if handle_protocol didn't return Err
-            static_boot_services().uninstall_protocol_interface_unchecked(controller, &HidInstanceProtocol, hid_instance)?;
+            static_boot_services().uninstall_protocol_interface_unchecked(
+                controller,
+                &HidInstanceProtocol,
+                hid_instance,
+            )?;
             drop(Box::from_raw(hid_instance));
         }
         Ok(())
