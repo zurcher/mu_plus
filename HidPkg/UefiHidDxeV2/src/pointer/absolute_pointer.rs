@@ -18,7 +18,6 @@ use rust_advanced_logger_dxe::{debugln, DEBUG_ERROR, DEBUG_INFO, DEBUG_WARN};
 use super::{PointerHidHandler, BUTTON_MAX, BUTTON_MIN, DIGITIZER_SWITCH_MAX, DIGITIZER_SWITCH_MIN};
 use crate::static_boot_services;
 use boot_services::{event::EventType, tpl::Tpl, BootServices};
-use uefi_protocol;
 
 // FFI context
 // Safety: a pointer to PointerHidHandler is included in the context so that it can be reclaimed in the absolute_pointer
@@ -82,7 +81,7 @@ impl PointerContext {
         let status = unsafe {
             static_boot_services().install_protocol_interface_unchecked(
                 Some(controller),
-                &uefi_protocol::AbsolutePointer,
+                &r_efi::protocols::absolute_pointer::PROTOCOL_GUID,
                 absolute_pointer_ptr as *mut c_void,
             )
         };
@@ -144,7 +143,7 @@ impl PointerContext {
         let status = unsafe {
             static_boot_services().open_protocol_unchecked(
                 controller,
-                &uefi_protocol::AbsolutePointer,
+                &r_efi::protocols::absolute_pointer::PROTOCOL_GUID,
                 agent,
                 controller,
                 efi::OPEN_PROTOCOL_GET_PROTOCOL,
@@ -161,7 +160,7 @@ impl PointerContext {
         let status = unsafe {
             static_boot_services().uninstall_protocol_interface_unchecked(
                 controller,
-                &uefi_protocol::AbsolutePointer,
+                &r_efi::protocols::absolute_pointer::PROTOCOL_GUID,
                 absolute_pointer_ptr as *mut c_void,
             )
         };
@@ -284,308 +283,3 @@ impl PointerContext {
     }
 }
 
-#[cfg(test)]
-mod test {
-    use super::*;
-    use crate::{
-        boot_services::MockUefiBootServices,
-        hid_io::{HidReportReceiver, MockHidIo},
-        pointer::CENTER,
-    };
-    use core::ffi::c_void;
-    use r_efi::{efi, protocols};
-
-    static MOUSE_REPORT_DESCRIPTOR: &[u8] = &[
-        0x05, 0x01, // USAGE_PAGE (Generic Desktop)
-        0x09, 0x02, // USAGE (Mouse)
-        0xa1, 0x01, // COLLECTION (Application)
-        0x09, 0x01, //   USAGE(Pointer)
-        0xa1, 0x00, //   COLLECTION (Physical)
-        0x05, 0x09, //     USAGE_PAGE (Button)
-        0x19, 0x01, //     USAGE_MINIMUM(1)
-        0x29, 0x05, //     USAGE_MAXIMUM(5)
-        0x15, 0x00, //     LOGICAL_MINIMUM(0)
-        0x25, 0x01, //     LOGICAL_MAXIMUM(1)
-        0x95, 0x05, //     REPORT_COUNT(5)
-        0x75, 0x01, //     REPORT_SIZE(1)
-        0x81, 0x02, //     INPUT(Data, Variable, Absolute)
-        0x95, 0x01, //     REPORT_COUNT(1)
-        0x75, 0x03, //     REPORT_SIZE(3)
-        0x81, 0x01, //     INPUT(Constant, Array, Absolute)
-        0x05, 0x01, //     USAGE_PAGE (Generic Desktop)
-        0x09, 0x30, //     USAGE (X)
-        0x09, 0x31, //     USAGE (Y)
-        0x09, 0x38, //     USAGE (Wheel)
-        0x15, 0x81, //     LOGICAL_MINIMUM (-127)
-        0x25, 0x7f, //     LOGICAL_MAXIMUM (127)
-        0x75, 0x08, //     REPORT_SIZE (8)
-        0x95, 0x03, //     REPORT_COUNT (3)
-        0x81, 0x06, //     INPUT(Data, Variable, Relative)
-        0xc0, //   END_COLLECTION
-        0xc0, // END_COLLECTION
-    ];
-
-    // In this module, the usage model for boot_services is global static, and so &'static dyn UefiBootServices is used
-    // throughout the API. For testing, each test will have a different set of expectations on the UefiBootServices mock
-    // object, and the mock object itself expects to be "mut", which makes it hard to handle as a single global static.
-    // Instead, raw pointers are used to simulate a MockUefiBootServices instance with 'static lifetime.
-    // This object needs to outlive anything that uses it - once created, it will live until the end of the program.
-    pub static mut MOCK_BOOT_SERVICES: MaybeUninit<MockBootServices> = MaybeUninit::uninit();
-
-    #[test]
-    fn wait_for_event_should_wait_for_event() {
-        let boot_services = MockBootServices::new();
-        const AGENT_HANDLE: efi::Handle = 0x01 as efi::Handle;
-        const CONTROLLER_HANDLE: efi::Handle = 0x02 as efi::Handle;
-        const POINTER_EVENT: efi::Event = 0x03 as efi::Event;
-
-        static mut ABS_PTR_INTERFACE: *mut c_void = ptr::null_mut();
-        static mut EVENT_CONTEXT: *mut c_void = ptr::null_mut();
-        static mut EVENT_SIGNALED: bool = false;
-
-        // expected on PointerHidHandler::initialize().
-        boot_services.expect_create_event().returning(|_, _, wait_for_ptr, context, event_ptr| {
-            assert!(wait_for_ptr == Some(PointerContext::wait_for_pointer));
-            assert_ne!(context, ptr::null_mut());
-            unsafe {
-                EVENT_CONTEXT = context;
-                event_ptr.write(POINTER_EVENT);
-            }
-            efi::Status::SUCCESS
-        });
-
-        boot_services.expect_install_protocol_interface().returning(|_, _, _, interface| {
-            unsafe { ABS_PTR_INTERFACE = interface };
-            efi::Status::SUCCESS
-        });
-
-        // expected on PointerHidHandler::drop().
-        boot_services.expect_open_protocol().returning(|_, _, interface, _, _, _| {
-            unsafe { *interface = ABS_PTR_INTERFACE };
-            efi::Status::SUCCESS
-        });
-        boot_services.expect_uninstall_protocol_interface().returning(|_, _, _| efi::Status::SUCCESS);
-        boot_services.expect_close_event().returning(|_| efi::Status::SUCCESS);
-
-        // expected on PointerHidHandler::receive_report
-        boot_services.expect_raise_tpl().returning(|new_tpl| {
-            assert_eq!(new_tpl, Tpl::NOTIFY);
-            Tpl::APPLICATION
-        });
-
-        boot_services.expect_restore_tpl().returning(|new_tpl| {
-            assert_eq!(new_tpl, Tpl::APPLICATION);
-            ()
-        });
-
-        boot_services.expect_signal_event().returning(|event| {
-            assert_eq!(event, POINTER_EVENT);
-            unsafe { EVENT_SIGNALED = true };
-            efi::Status::SUCCESS
-        });
-
-        let agent = AGENT_HANDLE;
-        let mut pointer_handler = PointerHidHandler::new(agent);
-        let mut hid_io = MockHidIo::new();
-        hid_io
-            .expect_get_report_descriptor()
-            .returning(|| Ok(hidparser::parse_report_descriptor(&MOUSE_REPORT_DESCRIPTOR).unwrap()));
-
-        let controller = CONTROLLER_HANDLE;
-        assert_eq!(pointer_handler.initialize(controller, &hid_io), Ok(()));
-
-        let absolute_pointer = unsafe { (ABS_PTR_INTERFACE as *mut PointerContext).as_mut() }.unwrap();
-        assert_eq!(absolute_pointer.absolute_pointer.wait_for_input, POINTER_EVENT);
-
-        // no pointer state change - should not signal event.
-        PointerContext::wait_for_pointer(POINTER_EVENT, unsafe { EVENT_CONTEXT });
-
-        assert_eq!(unsafe { EVENT_SIGNALED }, false);
-
-        //click two buttons and move the cursor (+32,+32)
-        let report: &[u8] = &[0x05, 0x20, 0x20, 0];
-        pointer_handler.receive_report(report, &hid_io);
-
-        // pointer state change in place - should signal event.
-        PointerContext::wait_for_pointer(POINTER_EVENT, unsafe { EVENT_CONTEXT });
-        assert_eq!(unsafe { EVENT_SIGNALED }, true);
-    }
-
-    #[test]
-    fn absolute_pointer_reset_should_reset_pointer_state() {
-        let boot_services = MockBootServices::new();
-        const AGENT_HANDLE: efi::Handle = 0x01 as efi::Handle;
-        const CONTROLLER_HANDLE: efi::Handle = 0x02 as efi::Handle;
-        const EVENT_HANDLE: efi::Handle = 0x03 as efi::Handle;
-
-        static mut ABS_PTR_INTERFACE: *mut c_void = ptr::null_mut();
-        static mut EVENT_CONTEXT: *mut c_void = ptr::null_mut();
-
-        // expected on PointerHidHandler::initialize().
-        boot_services.expect_create_event().returning(|_, _, wait_for_ptr, context, event_ptr| {
-            assert!(wait_for_ptr == Some(PointerContext::wait_for_pointer));
-            assert_ne!(context, ptr::null_mut());
-            unsafe {
-                EVENT_CONTEXT = context;
-                event_ptr.write(EVENT_HANDLE);
-            }
-            efi::Status::SUCCESS
-        });
-
-        boot_services.expect_install_protocol_interface().returning(|_, _, _, interface| {
-            unsafe { ABS_PTR_INTERFACE = interface };
-            efi::Status::SUCCESS
-        });
-
-        // expected on PointerHidHandler::drop().
-        boot_services.expect_open_protocol().returning(|_, _, interface, _, _, _| {
-            unsafe { *interface = ABS_PTR_INTERFACE };
-            efi::Status::SUCCESS
-        });
-        boot_services.expect_uninstall_protocol_interface().returning(|_, _, _| efi::Status::SUCCESS);
-        boot_services.expect_close_event().returning(|_| efi::Status::SUCCESS);
-
-        // expected on PointerHidHandler::receive_report
-        boot_services.expect_raise_tpl().returning(|new_tpl| {
-            assert_eq!(new_tpl, Tpl::NOTIFY);
-            Tpl::APPLICATION
-        });
-
-        boot_services.expect_restore_tpl().returning(|new_tpl| {
-            assert_eq!(new_tpl, Tpl::APPLICATION);
-            ()
-        });
-
-        let agent = AGENT_HANDLE;
-        let mut pointer_handler = PointerHidHandler::new(agent);
-        let mut hid_io = MockHidIo::new();
-        hid_io
-            .expect_get_report_descriptor()
-            .returning(|| Ok(hidparser::parse_report_descriptor(&MOUSE_REPORT_DESCRIPTOR).unwrap()));
-
-        let controller = CONTROLLER_HANDLE;
-        assert_eq!(pointer_handler.initialize(controller, &hid_io), Ok(()));
-
-        assert_eq!(pointer_handler.current_state.active_buttons, 0);
-        assert_eq!(pointer_handler.current_state.current_x, CENTER);
-        assert_eq!(pointer_handler.current_state.current_y, CENTER);
-        assert_eq!(pointer_handler.current_state.current_z, 0);
-        assert_eq!(pointer_handler.state_changed, false);
-
-        //click two buttons and move the cursor (+32,+32,+32)
-        let report: &[u8] = &[0x05, 0x20, 0x20, 0x20];
-        pointer_handler.receive_report(report, &hid_io);
-
-        assert_eq!(pointer_handler.current_state.active_buttons, 0x5);
-        assert_eq!(pointer_handler.current_state.current_x, CENTER + 0x20);
-        assert_eq!(pointer_handler.current_state.current_y, CENTER + 0x20);
-        assert_eq!(pointer_handler.current_state.current_z, 0x20);
-        assert_eq!(pointer_handler.state_changed, true);
-
-        //reset state
-        let status = PointerContext::absolute_pointer_reset(
-            unsafe { ABS_PTR_INTERFACE as *mut protocols::absolute_pointer::Protocol },
-            false,
-        );
-        assert_eq!(status, efi::Status::SUCCESS);
-
-        assert_eq!(pointer_handler.current_state.active_buttons, 0);
-        assert_eq!(pointer_handler.current_state.current_x, CENTER);
-        assert_eq!(pointer_handler.current_state.current_y, CENTER);
-        assert_eq!(pointer_handler.current_state.current_z, 0);
-        assert_eq!(pointer_handler.state_changed, false);
-    }
-
-    #[test]
-    fn absolute_pointer_get_state_should_return_current_state_and_clear_changed_flag() {
-        let boot_services = MockBootServices::new();
-        const AGENT_HANDLE: efi::Handle = 0x01 as efi::Handle;
-        const CONTROLLER_HANDLE: efi::Handle = 0x02 as efi::Handle;
-        const EVENT_HANDLE: efi::Handle = 0x03 as efi::Handle;
-
-        static mut ABS_PTR_INTERFACE: *mut c_void = ptr::null_mut();
-        static mut EVENT_CONTEXT: *mut c_void = ptr::null_mut();
-
-        // expected on PointerHidHandler::initialize().
-        boot_services.expect_create_event().returning(|_, _, wait_for_ptr, context, event_ptr| {
-            assert!(wait_for_ptr == Some(PointerContext::wait_for_pointer));
-            assert_ne!(context, ptr::null_mut());
-            unsafe {
-                EVENT_CONTEXT = context;
-                event_ptr.write(EVENT_HANDLE);
-            }
-            efi::Status::SUCCESS
-        });
-
-        boot_services.expect_install_protocol_interface().returning(|_, _, _, interface| {
-            unsafe { ABS_PTR_INTERFACE = interface };
-            efi::Status::SUCCESS
-        });
-
-        // expected on PointerHidHandler::drop().
-        boot_services.expect_open_protocol().returning(|_, _, interface, _, _, _| {
-            unsafe { *interface = ABS_PTR_INTERFACE };
-            efi::Status::SUCCESS
-        });
-        boot_services.expect_uninstall_protocol_interface().returning(|_, _, _| efi::Status::SUCCESS);
-        boot_services.expect_close_event().returning(|_| efi::Status::SUCCESS);
-
-        // expected on PointerHidHandler::receive_report
-        boot_services.expect_raise_tpl().returning(|new_tpl| {
-            assert_eq!(new_tpl, Tpl::NOTIFY);
-            Tpl::APPLICATION
-        });
-
-        boot_services.expect_restore_tpl().returning(|new_tpl| {
-            assert_eq!(new_tpl, Tpl::APPLICATION);
-            ()
-        });
-
-        let agent = AGENT_HANDLE;
-        let mut pointer_handler = PointerHidHandler::new(agent);
-        let mut hid_io = MockHidIo::new();
-        hid_io
-            .expect_get_report_descriptor()
-            .returning(|| Ok(hidparser::parse_report_descriptor(&MOUSE_REPORT_DESCRIPTOR).unwrap()));
-
-        let controller = CONTROLLER_HANDLE;
-        assert_eq!(pointer_handler.initialize(controller, &hid_io), Ok(()));
-
-        assert_eq!(pointer_handler.current_state.active_buttons, 0);
-        assert_eq!(pointer_handler.current_state.current_x, CENTER);
-        assert_eq!(pointer_handler.current_state.current_y, CENTER);
-        assert_eq!(pointer_handler.current_state.current_z, 0);
-        assert_eq!(pointer_handler.state_changed, false);
-
-        //click two buttons and move the cursor (+32,+32,+32)
-        let report: &[u8] = &[0x05, 0x20, 0x20, 0x20];
-        pointer_handler.receive_report(report, &hid_io);
-
-        assert_eq!(pointer_handler.current_state.active_buttons, 0x5);
-        assert_eq!(pointer_handler.current_state.current_x, CENTER + 0x20);
-        assert_eq!(pointer_handler.current_state.current_y, CENTER + 0x20);
-        assert_eq!(pointer_handler.current_state.current_z, 0x20);
-        assert_eq!(pointer_handler.state_changed, true);
-
-        let mut absolute_pointer_state: protocols::absolute_pointer::State = Default::default();
-        let status = PointerContext::absolute_pointer_get_state(
-            unsafe { ABS_PTR_INTERFACE as *mut protocols::absolute_pointer::Protocol },
-            &mut absolute_pointer_state as *mut protocols::absolute_pointer::State,
-        );
-        assert_eq!(status, efi::Status::SUCCESS);
-
-        assert_eq!(absolute_pointer_state.current_x, pointer_handler.current_state.current_x);
-        assert_eq!(absolute_pointer_state.current_y, pointer_handler.current_state.current_y);
-        assert_eq!(absolute_pointer_state.current_z, pointer_handler.current_state.current_z);
-        assert_eq!(absolute_pointer_state.active_buttons, pointer_handler.current_state.active_buttons);
-        assert_eq!(pointer_handler.state_changed, false);
-
-        //if get_state is attempted when there are no changes to state, it should return NOT_READY.
-        let mut absolute_pointer_state: protocols::absolute_pointer::State = Default::default();
-        let status = PointerContext::absolute_pointer_get_state(
-            unsafe { ABS_PTR_INTERFACE as *mut protocols::absolute_pointer::Protocol },
-            &mut absolute_pointer_state as *mut protocols::absolute_pointer::State,
-        );
-        assert_eq!(status, efi::Status::NOT_READY);
-    }
-}

@@ -22,13 +22,14 @@ mod uefi_entry {
 
     use rust_advanced_logger_dxe::{debugln, init_debug, DEBUG_ERROR};
     use rust_boot_services_allocator_dxe::GLOBAL_ALLOCATOR;
+    use driver_binding::UefiDriverBinding;
     use uefi_hid_dxe_v2::{
-        driver_binding::UefiDriverBinding,
         hid::{HidFactory, HidReceiverFactory},
         hid_io::{HidReportReceiver, UefiHidIoFactory},
         keyboard::KeyboardHidHandler,
         pointer::PointerHidHandler,
         BOOT_SERVICES, RUNTIME_SERVICES,
+        static_boot_services
     };
 
     struct UefiReceivers {
@@ -62,9 +63,9 @@ mod uefi_entry {
 
         let hid_io_factory = Box::new(UefiHidIoFactory::new(image_handle));
         let receiver_factory = Box::new(UefiReceivers { agent: image_handle });
-        let hid_factory = Box::new(HidFactory::new(hid_io_factory, receiver_factory, image_handle));
+        let hid_factory = HidFactory::new(hid_io_factory, receiver_factory, image_handle);
 
-        let hid_binding = UefiDriverBinding::new(hid_factory, image_handle);
+        let mut hid_binding = UefiDriverBinding::new(hid_factory, image_handle, static_boot_services());
         hid_binding.install().expect("failed to install HID driver binding");
 
         efi::Status::SUCCESS

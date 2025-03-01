@@ -18,8 +18,11 @@ HidIo = {path = "HidPkg/Crates/HidIo"}
 hidparser = {git = "https://github.com/microsoft/mu_rust_hid.git", branch = "main"}
 HiiKeyboardLayout = {path = "HidPkg/Crates/HiiKeyboardLayout"}
 mu_rust_helpers = { git = "https://github.com/microsoft/mu_rust_helpers.git", tag = "v2.0.0" }
-boot_services = { git = "https://github.com/pop-project/uefi-sdk.git", tag = "v2.0.0" }
-uefi_protocol = { git = "https://github.com/pop-project/uefi-sdk.git", tag = "v2.0.0" }
+# boot_services = { git = "https://github.com/pop-project/uefi-sdk.git", tag = "v2.0.0" }
+# uefi_protocol = { git = "https://github.com/pop-project/uefi-sdk.git", tag = "v2.0.0" }
+boot_services = { path = "C:\\git\\uefi-sdk\\boot_services" }
+uefi_protocol = { path = "C:\\git\\uefi-sdk\\uefi_protocol" }
+driver_binding = { path = "C:\\git\\uefi-sdk\\driver_binding" }
 
 memoffset = "0.9.0"
 num-traits = { version = "0.2", default-features = false}

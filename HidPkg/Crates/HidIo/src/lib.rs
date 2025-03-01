@@ -12,6 +12,7 @@ pub mod protocol {
 
     use r_efi::efi;
     use mu_rust_helpers::guid::guid;
+    use uefi_protocol::ProtocolInterface;
 
     /// HidIo interface GUID: 3EA93936-6BF4-49D6-AA50-D9F5B9AD8CFF
     pub const GUID: efi::Guid = guid!("3EA93936-6BF4-49D6-AA50-D9F5B9AD8CFF");
@@ -151,31 +152,8 @@ pub mod protocol {
         pub register_report_callback: HidIoRegisterReportCallback,
         pub unregister_report_callback: HidIoUnregisterReportCallback,
     }
-}
 
-pub mod interface {
-    use core::ops::Deref;
-
-    use crate::protocol;
-
-    use r_efi::efi;
-    use uefi_protocol::Protocol;
-    pub struct HidIoProtocol;
-
-    impl Deref for HidIoProtocol {
-        type Target = efi::Guid;
-
-        fn deref(&self) -> &Self::Target {
-            self.protocol_guid()
-        }
+    unsafe impl ProtocolInterface for Protocol {
+        const PROTOCOL_GUID: efi::Guid = GUID;
     }
-
-    unsafe impl Protocol for HidIoProtocol {
-        type Interface = protocol::Protocol;
-
-        fn protocol_guid(&self) -> &'static efi::Guid {
-            &protocol::GUID
-        }
-    }
-
 }

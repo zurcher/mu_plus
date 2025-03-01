@@ -23,7 +23,6 @@
 
 extern crate alloc;
 
-pub mod driver_binding;
 pub mod hid;
 pub mod hid_io;
 pub mod keyboard;

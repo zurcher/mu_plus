@@ -17,7 +17,7 @@ use core::{ffi::c_void, ptr, slice::from_raw_parts_mut};
 use mockall::automock;
 use r_efi::efi;
 
-use hid_io::{interface::HidIoProtocol, protocol::HidReportType};
+use hid_io;
 use hidparser::ReportDescriptor;
 use rust_advanced_logger_dxe::{debugln, DEBUG_ERROR};
 
@@ -98,7 +98,7 @@ impl UefiHidIo {
             }
         };
 
-        let hid_io = unsafe { static_boot_services().open_protocol(controller, &HidIoProtocol, agent, controller, attributes) }?;
+        let hid_io = unsafe { static_boot_services().open_protocol::<hid_io::protocol::Protocol>(controller, agent, controller, attributes) }?;
 
         Ok(Self { hid_io, controller, agent, receiver: None, owned })
     }
@@ -119,7 +119,7 @@ impl Drop for UefiHidIo {
     fn drop(&mut self) {
         if self.owned {
             let _ = self.take_report_receiver();
-            let status = static_boot_services().close_protocol(self.controller, &HidIoProtocol, self.agent, self.controller);
+            let status = static_boot_services().close_protocol(self.controller, &hid_io::protocol::GUID, self.agent, self.controller);
             if status.is_err() {
                 debugln!(DEBUG_ERROR, "Unexpected error closing hid_io: {:x?}", status);
             }
@@ -159,7 +159,7 @@ impl HidIo for UefiHidIo {
         match (self.hid_io.set_report)(
             self.hid_io,
             id.unwrap_or(0),
-            HidReportType::OutputReport,
+            hid_io::protocol::HidReportType::OutputReport,
             report.len(),
             report.as_ptr() as *mut c_void,
         ) {
