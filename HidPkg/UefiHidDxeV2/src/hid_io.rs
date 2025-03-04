@@ -98,7 +98,10 @@ impl UefiHidIo {
             }
         };
 
-        let hid_io = unsafe { static_boot_services().open_protocol::<hid_io::protocol::Protocol>(controller, agent, controller, attributes) }?;
+        let hid_io = unsafe {
+            static_boot_services()
+                .open_protocol::<hid_io::protocol::Protocol>(controller, agent, controller, attributes)
+        }?;
 
         Ok(Self { hid_io, controller, agent, receiver: None, owned })
     }
@@ -119,7 +122,12 @@ impl Drop for UefiHidIo {
     fn drop(&mut self) {
         if self.owned {
             let _ = self.take_report_receiver();
-            let status = static_boot_services().close_protocol(self.controller, &hid_io::protocol::GUID, self.agent, self.controller);
+            let status = static_boot_services().close_protocol(
+                self.controller,
+                &hid_io::protocol::GUID,
+                self.agent,
+                self.controller,
+            );
             if status.is_err() {
                 debugln!(DEBUG_ERROR, "Unexpected error closing hid_io: {:x?}", status);
             }
@@ -206,9 +214,8 @@ mod test {
     };
 
     use super::{HidIo, MockHidReportReceiver, UefiHidIo};
-
-    use crate::boot_services::MockUefiBootServices;
-
+    use crate::test_support::{with_global_lock, MOCK_BOOT_SERVICES};
+    use boot_services::MockBootServices;
     use r_efi::efi;
 
     static MINIMAL_BOOT_KEYBOARD_REPORT_DESCRIPTOR: &[u8] = &[
@@ -234,7 +241,6 @@ mod test {
     // object, and the mock object itself expects to be "mut", which makes it hard to handle as a single global static.
     // Instead, raw pointers are used to simulate a MockUefiBootServices instance with 'static lifetime.
     // This object needs to outlive anything that uses it - once created, it will live until the end of the program.
-    pub static mut MOCK_BOOT_SERVICES: MaybeUninit<MockBootServices> = MaybeUninit::uninit();
 
     // Mock the HidIo FFI interface.
     fn mock_hid_io() -> hid_io::protocol::Protocol {
@@ -328,106 +334,125 @@ mod test {
 
     #[test]
     fn new_should_instantiate_new_uefi_hid_io() {
-        let boot_services = MockBootServices::new();
-        let controller: efi::Handle = 0x1234 as efi::Handle;
-        let agent: efi::Handle = 0x4321 as efi::Handle;
+        with_global_lock(|| {
+            let mut boot_services = MockBootServices::new();
+            let controller: efi::Handle = 0x1234 as efi::Handle;
+            let agent: efi::Handle = 0x4321 as efi::Handle;
 
-        boot_services.expect_open_protocol().returning(|handle, protocol, interface, agent, controller, attributes| {
-            assert_eq!(handle, 0x1234 as efi::Handle);
-            assert_eq!(unsafe { *protocol }, hid_io::protocol::GUID);
-            assert_ne!(interface, ptr::null_mut());
-            assert_eq!(agent, 0x4321 as efi::Handle);
-            assert_eq!(controller, 0x1234 as efi::Handle);
-            assert_eq!(attributes, efi::OPEN_PROTOCOL_BY_DRIVER);
+            boot_services.expect_open_protocol::<hid_io::protocol::Protocol>().returning(
+                |handle, agent, controller, attributes| {
+                    assert_eq!(handle, 0x1234 as efi::Handle);
+                    assert_eq!(agent, 0x4321 as efi::Handle);
+                    assert_eq!(controller, 0x1234 as efi::Handle);
+                    assert_eq!(attributes, efi::OPEN_PROTOCOL_BY_DRIVER);
 
-            //note: this leaks; but easier than trying to share it between the closure and the environment.
-            let hid_io = Box::into_raw(Box::new(mock_hid_io()));
-            unsafe { *interface = hid_io as *mut c_void };
-            efi::Status::SUCCESS
-        });
+                    //note: this leaks; but easier than trying to share it between the closure and the environment.
+                    Ok(Box::leak(Box::new(mock_hid_io())))
+                },
+            );
 
-        boot_services.expect_close_protocol().returning(|handle, protocol, agent, controller| {
-            assert_eq!(handle, 0x1234 as efi::Handle);
-            assert_eq!(unsafe { *protocol }, hid_io::protocol::GUID);
-            assert_eq!(agent, 0x4321 as efi::Handle);
-            assert_eq!(controller, 0x1234 as efi::Handle);
-            efi::Status::SUCCESS
-        });
+            boot_services.expect_close_protocol().returning(|handle, protocol, agent, controller| {
+                assert_eq!(handle, 0x1234 as efi::Handle);
+                assert_eq!(*protocol, hid_io::protocol::GUID);
+                assert_eq!(agent, 0x4321 as efi::Handle);
+                assert_eq!(controller, 0x1234 as efi::Handle);
+                Ok(())
+            });
+            unsafe { MOCK_BOOT_SERVICES.write(boot_services) };
 
-        let uefi_hid_io = UefiHidIo::new(agent, controller, true).unwrap();
-        drop(uefi_hid_io);
+            let uefi_hid_io = UefiHidIo::new(agent, controller, true).unwrap();
+            drop(uefi_hid_io);
+            unsafe { MOCK_BOOT_SERVICES.assume_init_drop() };
+        })
+        .unwrap()
     }
 
     #[test]
     fn get_report_descriptor_should_return_report_descriptor() {
-        let boot_services = MockBootServices::new();
-        let controller: efi::Handle = 0x1234 as efi::Handle;
-        let agent: efi::Handle = 0x4321 as efi::Handle;
+        with_global_lock(|| {
+            let mut boot_services = MockBootServices::new();
+            let controller: efi::Handle = 0x1234 as efi::Handle;
+            let agent: efi::Handle = 0x4321 as efi::Handle;
 
-        boot_services.expect_open_protocol().returning(|_, _, interface, _, _, _| {
-            let hid_io = mock_hid_io();
-            //note: this leaks; but easier than trying to share it between the closure and the environment.
-            unsafe { *interface = Box::into_raw(Box::new(hid_io)) as *mut c_void };
-            efi::Status::SUCCESS
-        });
+            boot_services.expect_open_protocol::<hid_io::protocol::Protocol>().returning(|_, _, _, _| {
+                let hid_io = mock_hid_io();
+                //note: this leaks; but easier than trying to share it between the closure and the environment.
+                Ok(Box::leak(Box::new(hid_io)))
+            });
 
-        boot_services.expect_close_protocol().returning(|_, _, _, _| efi::Status::SUCCESS);
+            boot_services.expect_close_protocol().returning(|_, _, _, _| Ok(()));
+            unsafe { MOCK_BOOT_SERVICES.write(boot_services) };
 
-        let uefi_hid_io = UefiHidIo::new(agent, controller, true).unwrap();
-        let descriptor = uefi_hid_io.get_report_descriptor().unwrap();
-        assert_eq!(descriptor, hidparser::parse_report_descriptor(&MINIMAL_BOOT_KEYBOARD_REPORT_DESCRIPTOR).unwrap());
-        drop(uefi_hid_io);
+            let uefi_hid_io = UefiHidIo::new(agent, controller, true).unwrap();
+            let descriptor = uefi_hid_io.get_report_descriptor().unwrap();
+            assert_eq!(
+                descriptor,
+                hidparser::parse_report_descriptor(&MINIMAL_BOOT_KEYBOARD_REPORT_DESCRIPTOR).unwrap()
+            );
+            drop(uefi_hid_io);
+            unsafe { MOCK_BOOT_SERVICES.assume_init_drop() };
+        })
+        .unwrap()
     }
+
     #[test]
     fn set_report_should_set_report() {
-        let boot_services = MockBootServices::new();
-        let controller: efi::Handle = 0x1234 as efi::Handle;
-        let agent: efi::Handle = 0x4321 as efi::Handle;
+        with_global_lock(|| {
+            let mut boot_services = MockBootServices::new();
+            let controller: efi::Handle = 0x1234 as efi::Handle;
+            let agent: efi::Handle = 0x4321 as efi::Handle;
 
-        boot_services.expect_open_protocol().returning(|_, _, interface, _, _, _| {
-            let hid_io = mock_hid_io();
-            unsafe { *interface = Box::into_raw(Box::new(hid_io)) as *mut c_void };
-            efi::Status::SUCCESS
-        });
+            boot_services.expect_open_protocol::<hid_io::protocol::Protocol>().returning(|_, _, _, _| {
+                let hid_io = mock_hid_io();
+                Ok(Box::leak(Box::new(hid_io)))
+            });
 
-        boot_services.expect_close_protocol().returning(|_, _, _, _| efi::Status::SUCCESS);
+            boot_services.expect_close_protocol().returning(|_, _, _, _| Ok(()));
+            unsafe { MOCK_BOOT_SERVICES.write(boot_services) };
 
-        let uefi_hid_io = UefiHidIo::new(agent, controller, true).unwrap();
+            let uefi_hid_io = UefiHidIo::new(agent, controller, true).unwrap();
 
-        uefi_hid_io.set_output_report(None, &TEST_REPORT0).unwrap();
-        uefi_hid_io.set_output_report(Some(1), &TEST_REPORT1).unwrap();
-        assert_eq!(uefi_hid_io.set_output_report(Some(2), &TEST_REPORT0), Err(efi::Status::UNSUPPORTED));
+            uefi_hid_io.set_output_report(None, &TEST_REPORT0).unwrap();
+            uefi_hid_io.set_output_report(Some(1), &TEST_REPORT1).unwrap();
+            assert_eq!(uefi_hid_io.set_output_report(Some(2), &TEST_REPORT0), Err(efi::Status::UNSUPPORTED));
 
-        drop(uefi_hid_io);
+            drop(uefi_hid_io);
+            unsafe { MOCK_BOOT_SERVICES.assume_init_drop() };
+        })
+        .unwrap()
     }
 
     #[test]
     fn set_receiver_should_install_receiver() {
-        let boot_services = MockBootServices::new();
-        let controller: efi::Handle = 0x1234 as efi::Handle;
-        let agent: efi::Handle = 0x4321 as efi::Handle;
+        with_global_lock(|| {
+            let mut boot_services = MockBootServices::new();
+            let controller: efi::Handle = 0x1234 as efi::Handle;
+            let agent: efi::Handle = 0x4321 as efi::Handle;
 
-        boot_services.expect_open_protocol().returning(|_, _, interface, _, _, _| {
-            let hid_io = mock_hid_io();
-            unsafe { *interface = Box::into_raw(Box::new(hid_io)) as *mut c_void };
-            efi::Status::SUCCESS
-        });
+            boot_services.expect_open_protocol().returning(|_, _, _, _| {
+                let hid_io = mock_hid_io();
+                Ok(Box::leak(Box::new(hid_io)))
+            });
 
-        boot_services.expect_close_protocol().returning(|_, _, _, _| efi::Status::SUCCESS);
+            boot_services.expect_close_protocol().returning(|_, _, _, _| Ok(()));
+            unsafe { MOCK_BOOT_SERVICES.write(boot_services) };
 
-        let mut uefi_hid_io = UefiHidIo::new(agent, controller, true).unwrap();
+            let mut uefi_hid_io = UefiHidIo::new(agent, controller, true).unwrap();
 
-        let mut mock_receiver = MockHidReportReceiver::new();
-        mock_receiver
-            .expect_receive_report()
-            .withf(|report, _| {
-                assert_eq!(report, TEST_REPORT0);
-                true
-            })
-            .returning(|_, _| ());
+            let mut mock_receiver = MockHidReportReceiver::new();
+            mock_receiver
+                .expect_receive_report()
+                .withf(|report, _| {
+                    assert_eq!(report, TEST_REPORT0);
+                    true
+                })
+                .returning(|_, _| ());
 
-        uefi_hid_io.set_report_receiver(Box::new(mock_receiver)).unwrap();
+            uefi_hid_io.set_report_receiver(Box::new(mock_receiver)).unwrap();
 
-        drop(uefi_hid_io);
+            drop(uefi_hid_io);
+            unsafe { MOCK_BOOT_SERVICES.assume_init_drop() };
+        })
+        .unwrap()
     }
 }
