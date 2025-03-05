@@ -146,7 +146,7 @@ impl DriverBinding for HidFactory {
     /// using the HidIoFactory provided at construction - if that succeeds, the
     /// controller is considered supported. Note that the actual HidIo instance
     /// constructed for the test is dropped on return.
-    fn supported<T: BootServices + 'static>(
+    fn driver_binding_supported<T: BootServices + 'static>(
         &self,
         _boot_services: &'static T,
         controller: efi::Handle,
@@ -167,7 +167,7 @@ impl DriverBinding for HidFactory {
     /// structure is created and associated with the controller to own these
     /// objects as long as the instance is "running"  - i.e. until
     /// [`Self::driver_binding_stop`] is invoked for the controller.
-    fn start<T: BootServices + 'static>(
+    fn driver_binding_start<T: BootServices + 'static>(
         &self,
         boot_services: &'static T,
         controller: efi::Handle,
@@ -204,7 +204,7 @@ impl DriverBinding for HidFactory {
     ///
     /// Stops Hid support for the given controller. The private "HidInstance"
     /// created by [`Self::driver_binding_start`] is reclaimed and dropped.
-    fn stop<T: BootServices + 'static>(
+    fn driver_binding_stop<T: BootServices + 'static>(
         &self,
         boot_services: &'static T,
         controller: efi::Handle,
@@ -220,13 +220,240 @@ impl DriverBinding for HidFactory {
                 efi::OPEN_PROTOCOL_GET_PROTOCOL,
             )?;
             // SAFETY: `hid_instance` is expected to be valid if handle_protocol didn't return Err
-            boot_services.uninstall_protocol_interface_unchecked(
-                controller,
-                &hid_io::protocol::GUID,
-                hid_instance,
-            )?;
+            boot_services.uninstall_protocol_interface_unchecked(controller, &hid_io::protocol::GUID, hid_instance)?;
             drop(Box::from_raw(hid_instance));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use core::{ffi::c_void, mem::MaybeUninit};
+
+    use crate::{
+        hid::HidInstance,
+        hid_io::{HidReportReceiver, MockHidIo, MockHidIoFactory, MockHidReportReceiver},
+        test_support::{with_global_lock, MOCK_BOOT_SERVICES},
+    };
+    use boot_services::{c_ptr::CPtr, MockBootServices};
+    use driver_binding::DriverBinding;
+    use r_efi::efi;
+
+    use super::{HidFactory, HidSplitter, MockHidReceiverFactory};
+
+    // In this module, the usage model for boot_services is global static, and so &'static dyn UefiBootServices is used
+    // throughout the API. For testing, each test will have a different set of expectations on the UefiBootServices mock
+    // object, and the mock object itself expects to be "mut", which makes it hard to handle as a single global static.
+    // Instead, raw pointers are used to simulate a MockUefiBootServices instance with 'static lifetime.
+    // This object needs to outlive anything that uses it - once created, it will live until the end of the program.
+
+    #[test]
+    fn driver_binding_supported_should_indicate_support() {
+        with_global_lock(|| {
+            let boot_services = MockBootServices::new();
+            unsafe { MOCK_BOOT_SERVICES.write(boot_services) };
+
+            let mut hid_io_factory = Box::new(MockHidIoFactory::new());
+            //handle 0x3 should return success.
+            hid_io_factory
+                .expect_new_hid_io()
+                .withf_st(|controller, _| *controller == 0x3 as efi::Handle)
+                .returning(|_, _| Ok(Box::new(MockHidIo::new())));
+            //default for any other handles
+            hid_io_factory.expect_new_hid_io().returning(|_, _| Err(efi::Status::UNSUPPORTED));
+
+            let receiver_factory = Box::new(MockHidReceiverFactory::new());
+            let agent = 0x1 as efi::Handle;
+            let hid_factory = HidFactory::new(hid_io_factory, receiver_factory, agent);
+
+            let controller = 0x2 as efi::Handle;
+            assert_eq!(
+                hid_factory.driver_binding_supported(unsafe { MOCK_BOOT_SERVICES.assume_init_mut() }, controller, None),
+                Ok(false)
+            );
+
+            let controller = 0x3 as efi::Handle;
+            assert!(hid_factory
+                .driver_binding_supported(unsafe { MOCK_BOOT_SERVICES.assume_init_mut() }, controller, None)
+                .is_ok());
+            unsafe { MOCK_BOOT_SERVICES.assume_init_drop() };
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn driver_binding_start_should_not_start_when_not_supported() {
+        with_global_lock(|| {
+            let boot_services = MockBootServices::new();
+            unsafe { MOCK_BOOT_SERVICES.write(boot_services) };
+
+            let mut hid_io_factory = Box::new(MockHidIoFactory::new());
+            hid_io_factory
+                .expect_new_hid_io()
+                .withf_st(|controller, _| *controller == 0x3 as efi::Handle)
+                .returning(|_, _| Ok(Box::new(MockHidIo::new())));
+            hid_io_factory
+                .expect_new_hid_io()
+                .withf_st(|controller, _| *controller == 0x4 as efi::Handle)
+                .returning(|_, _| Ok(Box::new(MockHidIo::new())));
+            //default for any other handles
+            hid_io_factory.expect_new_hid_io().returning(|_, _| Err(efi::Status::UNSUPPORTED));
+
+            let mut receiver_factory = Box::new(MockHidReceiverFactory::new());
+            receiver_factory
+                .expect_new_hid_receiver_list()
+                .withf_st(|controller| *controller == 0x4 as efi::Handle)
+                .returning(|_| Ok(Vec::new()));
+            receiver_factory.expect_new_hid_receiver_list().returning(|_| Err(efi::Status::UNSUPPORTED));
+
+            let agent = 0x1 as efi::Handle;
+            let hid_factory = HidFactory::new(hid_io_factory, receiver_factory, agent);
+
+            // test: no hid_io on the handle.
+            let controller = 0x02 as efi::Handle;
+            assert_eq!(
+                hid_factory.driver_binding_start(unsafe { MOCK_BOOT_SERVICES.assume_init_mut() }, controller, None),
+                Err(efi::Status::UNSUPPORTED)
+            );
+
+            // test: hid_io present, but failed to retrieve receivers.
+            let controller = 0x03 as efi::Handle;
+            assert_eq!(
+                hid_factory.driver_binding_start(unsafe { MOCK_BOOT_SERVICES.assume_init_mut() }, controller, None),
+                Err(efi::Status::UNSUPPORTED)
+            );
+
+            // test: hid_io present, empty receiver list.
+            let controller = 0x04 as efi::Handle;
+            assert_eq!(
+                hid_factory.driver_binding_start(unsafe { MOCK_BOOT_SERVICES.assume_init_mut() }, controller, None),
+                Err(efi::Status::UNSUPPORTED)
+            );
+
+            //test: hid_io present, receiver present, receiver init indicates no support.
+            let mut hid_io_factory = Box::new(MockHidIoFactory::new());
+            hid_io_factory.expect_new_hid_io().returning(|_, _| Ok(Box::new(MockHidIo::new())));
+
+            let mut receiver_factory = Box::new(MockHidReceiverFactory::new());
+            receiver_factory.expect_new_hid_receiver_list().returning(|_| {
+                let mut hid_receiver = MockHidReportReceiver::new();
+                hid_receiver.expect_initialize().returning(|_, _| Err(efi::Status::UNSUPPORTED));
+                Ok(vec![Box::new(hid_receiver)])
+            });
+
+            let hid_factory = HidFactory::new(hid_io_factory, receiver_factory, agent);
+            let controller = 0x02 as efi::Handle;
+            assert_eq!(
+                hid_factory.driver_binding_start(unsafe { MOCK_BOOT_SERVICES.assume_init_mut() }, controller, None),
+                Err(efi::Status::UNSUPPORTED)
+            );
+            unsafe { MOCK_BOOT_SERVICES.assume_init_drop() };
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn driver_binding_start_should_start_when_supported() {
+        with_global_lock(|| {
+            let mut boot_services = MockBootServices::new();
+            let agent = 0x1 as efi::Handle;
+
+            let mut hid_io_factory = Box::new(MockHidIoFactory::new());
+            hid_io_factory.expect_new_hid_io().returning(|_, _| {
+                let mut hid_io = MockHidIo::new();
+                hid_io.expect_set_report_receiver().returning(|_| Ok(()));
+                Ok(Box::new(hid_io))
+            });
+
+            let mut receiver_factory = Box::new(MockHidReceiverFactory::new());
+            receiver_factory.expect_new_hid_receiver_list().returning(|_| {
+                let mut hid_receiver = MockHidReportReceiver::new();
+                hid_receiver.expect_initialize().returning(|_, _| Ok(()));
+                Ok(vec![Box::new(hid_receiver)])
+            });
+
+            boot_services
+                .expect_install_protocol_interface()
+                .returning(|handle, interface: &'static mut HidInstance| Ok((handle.unwrap(), interface.metadata())));
+
+            unsafe { MOCK_BOOT_SERVICES.write(boot_services) };
+
+            let hid_factory = HidFactory::new(hid_io_factory, receiver_factory, agent);
+            let controller = 0x02 as efi::Handle;
+            hid_factory
+                .driver_binding_start(unsafe { MOCK_BOOT_SERVICES.assume_init_mut() }, controller, None)
+                .unwrap();
+
+            //test note: this will leak a HidInstance.
+            unsafe { MOCK_BOOT_SERVICES.assume_init_drop() };
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn driver_binding_start_should_stop_after_start() {
+        with_global_lock(|| {
+            let mut boot_services = MockBootServices::new();
+            let agent = 0x1 as efi::Handle;
+
+            let mut hid_io_factory = Box::new(MockHidIoFactory::new());
+            hid_io_factory.expect_new_hid_io().returning(|_, _| {
+                let mut hid_io = MockHidIo::new();
+                hid_io.expect_set_report_receiver().returning(|_| Ok(()));
+                Ok(Box::new(hid_io))
+            });
+
+            let mut receiver_factory = Box::new(MockHidReceiverFactory::new());
+            receiver_factory.expect_new_hid_receiver_list().returning(|_| {
+                let mut hid_receiver = MockHidReportReceiver::new();
+                hid_receiver.expect_initialize().returning(|_, _| Ok(()));
+                Ok(vec![Box::new(hid_receiver)])
+            });
+
+            static mut HID_INSTANCE: MaybeUninit<&mut HidInstance> = MaybeUninit::uninit();
+            boot_services.expect_install_protocol_interface().returning(
+                |handle, interface: &'static mut HidInstance| {
+                    unsafe { HID_INSTANCE.write(interface) };
+                    Ok((handle.unwrap(), unsafe { HID_INSTANCE.assume_init_read().metadata() }))
+                },
+            );
+
+            boot_services.expect_open_protocol_unchecked().returning(|_, _, _, _, _| unsafe {
+                Ok(HID_INSTANCE.assume_init_read() as *mut HidInstance as *mut c_void)
+            });
+
+            boot_services.expect_uninstall_protocol_interface_unchecked().returning(|_, _, _| Ok(()));
+
+            unsafe { MOCK_BOOT_SERVICES.write(boot_services) };
+
+            let hid_factory = HidFactory::new(hid_io_factory, receiver_factory, agent);
+            let controller = 0x02 as efi::Handle;
+            hid_factory
+                .driver_binding_start(unsafe { MOCK_BOOT_SERVICES.assume_init_mut() }, controller, None)
+                .unwrap();
+
+            assert_ne!(unsafe { HID_INSTANCE.as_mut_ptr() }, core::ptr::null_mut());
+
+            hid_factory
+                .driver_binding_stop(unsafe { MOCK_BOOT_SERVICES.assume_init_mut() }, controller, 0, None)
+                .unwrap();
+            unsafe { MOCK_BOOT_SERVICES.assume_init_drop() };
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn hid_splitter_should_split_things() {
+        let mut mock_hid_receiver1 = MockHidReportReceiver::new();
+        mock_hid_receiver1.expect_receive_report().returning(|_, _| ());
+        let mut mock_hid_receiver2 = MockHidReportReceiver::new();
+        mock_hid_receiver2.expect_receive_report().returning(|_, _| ());
+        let receivers: Vec<Box<dyn HidReportReceiver>> =
+            vec![Box::new(mock_hid_receiver1), Box::new(mock_hid_receiver2)];
+
+        let mut hid_splitter = HidSplitter { receivers };
+        let mock_hid_io = MockHidIo::new();
+        hid_splitter.receive_report(&[0, 0, 0, 0], &mock_hid_io);
     }
 }
